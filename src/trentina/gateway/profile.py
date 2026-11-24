@@ -1383,6 +1383,18 @@ class Backend(BaseModel):
             "another backend's (short_names). Default: the backend name."
         ),
     )
+    tool_prefix: str | None = Field(
+        default=None,
+        pattern=r"^[a-z][a-z0-9_]{0,15}$",
+        description=(
+            "Prefix for EVERY served tool name of this backend, collision or "
+            "not: `work` serves memory_store as work_memory_store. The name "
+            "says which backend a call reaches, for backends an agent must "
+            "never confuse (two memory stores). Setting it renames tools an "
+            "agent already knows; the old names are retired, never resolved "
+            "again and never reissued. Overrides name_tag."
+        ),
+    )
     l3_briefing: str | None = Field(
         default=None,
         max_length=MAX_L3_BRIEFING_CHARS,
@@ -3819,6 +3831,21 @@ class Profile(BaseModel):
                 if backend.is_decoy
             },
         }
+
+    @model_validator(mode="after")
+    def tool_prefixes_are_distinct(self) -> Profile:
+        """Two backends under one tool_prefix would serve names that say nothing."""
+        seen: dict[str, str] = {}
+        for name, backend in self.backends.items():
+            prefix = backend.tool_prefix
+            if prefix is None:
+                continue
+            if prefix in seen:
+                raise ValueError(
+                    f"backends {seen[prefix]!r} and {name!r} share tool_prefix {prefix!r}"
+                )
+            seen[prefix] = name
+        return self
 
     @model_validator(mode="after")
     def a_honeypot_holds_nothing_real(self) -> Profile:

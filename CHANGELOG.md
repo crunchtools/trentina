@@ -10,6 +10,12 @@ under that name.
 
 ## [Unreleased]
 
+## [6.31.0] - 2026-11-24
+
+### Added
+
+- **`tool_prefix` on a backend: a name that always says where a call lands.** `name_tag` prefixes only on a collision, so a seat with one memory store served it as bare `memory_store` and a seat with two served `memory_store` and `enclave_memory_store`, neither saying which store was Red Hat work and which personal. `tool_prefix: work` serves every tool of the backend as `work_<tool>`, whole (`work_memory_store`), on every profile. Setting it renames tools already issued: the old name moves to the new `retired_tool_names` table, reserved forever and never resolved for a live call, so an agent still calling `memory_store` gets an unknown tool rather than reaching the other store. Credential replay resolves retired names, since a transcript predates the rename. Two backends in one profile may not share a prefix; a forced name another tool already holds is not taken and is logged by backend.
+
 ## [6.30.1] - 2026-11-23
 
 ### Changed

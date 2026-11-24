@@ -177,6 +177,16 @@ class Resolver:
                             "SELECT issued, backend, tool FROM tool_names WHERE profile = ?",
                             (profile,),
                         ).fetchall()
+                        # A transcript can predate a tool_prefix: what a name
+                        # meant then is what it means here (6.31.0).
+                        if db.execute(
+                            "SELECT 1 FROM sqlite_master WHERE name = 'retired_tool_names'"
+                        ).fetchone():
+                            rows += db.execute(
+                                "SELECT issued, backend, tool FROM retired_tool_names "
+                                "WHERE profile = ?",
+                                (profile,),
+                            ).fetchall()
                     finally:
                         db.close()
                     names = {r[0]: (r[1], r[2]) for r in rows}

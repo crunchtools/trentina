@@ -12,7 +12,7 @@ from trentina.core.stages import IngressDecision
 from trentina.database import issued_tool_names
 from trentina.gateway.aggregate import reset_profile_tools_cache
 from trentina.gateway.backend import BackendCall
-from trentina.gateway.names import _issued, assign, base_names
+from trentina.gateway.names import _issued, assign, base_names, prefixed
 from trentina.gateway.profile import AuthConfig, Backend, Profile
 from trentina.transports.mcp import route_jsonrpc
 
@@ -73,6 +73,76 @@ def test_a_tag_clash_falls_back_to_the_long_form() -> None:
     assert served[("z", "list_tool")] == "z__list_tool"
 
 
+def test_a_prefix_is_forced_and_retires_the_old_name() -> None:
+    issued = {
+        "memory_store": ("gloval", "memory_store"),
+        "enclave_memory_store": ("mw", "memory_store"),
+    }
+    wanted = [("gloval", "memory_store"), ("mw", "memory_store"), ("mw", "memory_search")]
+    issue, retire = prefixed(wanted, {"gloval": "personal", "mw": "work"}, issued, set())
+    assert issue == {
+        "personal_memory_store": ("gloval", "memory_store"),
+        "work_memory_store": ("mw", "memory_store"),
+        "work_memory_search": ("mw", "memory_search"),
+    }
+    assert retire == {
+        "memory_store": ("gloval", "memory_store"),
+        "enclave_memory_store": ("mw", "memory_store"),
+    }
+
+
+def test_a_prefix_keeps_every_word_of_the_tool_name() -> None:
+    """No shared-word dropping: memory_get_by_hash must not become work_get_by_hash."""
+    issue, _ = prefixed([("mw", "memory_get_by_hash")], {"mw": "work"}, {}, set())
+    assert issue == {"work_memory_get_by_hash": ("mw", "memory_get_by_hash")}
+
+
+def test_a_prefixed_name_already_held_is_not_taken() -> None:
+    issued = {"work_memory_store": ("other", "x")}
+    retired = {"work_memory_search"}
+    issue, retire = prefixed([("mw", "memory_store")], {"mw": "work"}, issued, retired)
+    assert issue == {} and retire == {}
+    issue, _ = prefixed([("mw", "memory_search")], {"mw": "work"}, {}, {"work_memory_search"})
+    assert issue == {}
+
+
+def test_a_retired_name_is_never_issued_again() -> None:
+    served, _ = assign([("new", "memory_store")], {"new": "new"}, {}, {"memory_store"})
+    assert served[("new", "memory_store")] == "new_memory_store"
+
+
+def test_two_backends_cannot_share_a_prefix() -> None:
+    with pytest.raises(ValueError, match="share tool_prefix"):
+        Profile(
+            name="p",
+            auth=AuthConfig(bearer_token_env="TEST"),
+            backends={
+                "a": Backend(url="http://a:8000/mcp", tool_prefix="work"),
+                "b": Backend(url="http://b:8000/mcp", tool_prefix="work"),
+            },
+        )
+
+
+def _memory_profile(prefixes: bool) -> Profile:
+    p = Profile(
+        name="memnames",
+        auth=AuthConfig(bearer_token_env="TEST"),
+        backends={
+            "memory-work": Backend(
+                url="http://mw:8000/mcp",
+                name_tag=None if prefixes else "enclave",
+                tool_prefix="work" if prefixes else None,
+            ),
+            "gloval": Backend(
+                url="http://gloval:8000/mcp", tool_prefix="personal" if prefixes else None
+            ),
+        },
+    )
+    assert p.auth is not None
+    p.auth.bearer_token = SecretStr("x")
+    return p
+
+
 def _profile(short_names: bool = True) -> Profile:
     p = Profile(
         name="names",
@@ -89,6 +159,8 @@ def _profile(short_names: bool = True) -> Profile:
 
 
 LISTS = {
+    "memory-work": [{"name": "memory_store"}, {"name": "memory_search"}],
+    "gloval": [{"name": "memory_store"}, {"name": "memory_search"}, {"name": "fetch"}],
     "jira": [{"name": "jira_get_issue"}, {"name": "jira_search_fields"}],
     "github": [{"name": "get_issue_tool"}, {"name": "list_repo_tree_tool"}],
 }
@@ -189,3 +261,35 @@ class TestTheEdge:
         assert (await _list(_profile(short_names=False)))[0] == "jira__jira_get_issue"
         resp, _ = await _call(_profile(short_names=False), "search_fields")
         assert "Unknown tool" in resp["error"]["message"]
+
+
+@pytest.mark.asyncio
+class TestToolPrefix:
+    async def test_prefixes_rename_names_already_issued(self) -> None:
+        before = await _list(_memory_profile(prefixes=False))
+        assert {"enclave_memory_store", "gloval_memory_store"} <= set(before)
+        after = await _list(_memory_profile(prefixes=True))
+        assert sorted(after) == [
+            "personal_fetch",
+            "personal_memory_search",
+            "personal_memory_store",
+            "work_memory_search",
+            "work_memory_store",
+        ]
+
+    async def test_a_retired_name_no_longer_routes(self) -> None:
+        await _list(_memory_profile(prefixes=False))
+        await _list(_memory_profile(prefixes=True))
+        _issued.clear()
+        for old in ("memory_store", "enclave_memory_store"):
+            resp, backend = await _call(_memory_profile(prefixes=True), old)
+            assert "Unknown tool" in resp["error"]["message"]
+            backend.assert_not_awaited()
+
+    async def test_a_prefixed_name_routes_to_its_own_backend(self) -> None:
+        await _list(_memory_profile(prefixes=True))
+        _, backend = await _call(_memory_profile(prefixes=True), "work_memory_store")
+        assert backend.call_args.args[0] == "memory-work"
+        assert backend.call_args.args[2] == "memory_store"
+        _, backend = await _call(_memory_profile(prefixes=True), "personal_memory_store")
+        assert backend.call_args.args[0] == "gloval"

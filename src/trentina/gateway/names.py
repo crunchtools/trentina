@@ -18,6 +18,10 @@ The rule, applied without a model:
    ``work_send_gmail_message`` and ``home_send_gmail_message``, never
    ``send_gmail_message1``, because a number cannot tell an agent which
    account it is about to send from.
+4. A backend with ``tool_prefix`` (6.31.0) skips 1-3: every tool is served
+   as ``<prefix>_<tool>``, collision or not, so the name alone says where a
+   call lands (``work_memory_store``, ``personal_memory_store``). A name it
+   replaces is retired: reserved forever, never resolved again.
 
 A name, once issued to a profile, is never reassigned (``database.tool_names``).
 A backend added later cannot rename a tool an agent already knows: the
@@ -28,11 +32,18 @@ newcomer takes the tag. Everything behind the edge — allowlists, guards,
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import Counter, defaultdict
 from typing import TYPE_CHECKING, Any
 
-from ..database import issue_tool_names, issued_tool_name, issued_tool_names
+from ..database import (
+    issue_tool_names,
+    issued_tool_name,
+    issued_tool_names,
+    retire_tool_names,
+    retired_tool_names,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -44,6 +55,8 @@ if TYPE_CHECKING:
 NAMESPACE_SEP = "__"
 
 Pair = tuple[str, str]  # (backend, tool)
+
+logger = logging.getLogger(__name__)
 
 _INVALID = re.compile(r"[^A-Za-z0-9-]+")
 
@@ -98,10 +111,47 @@ def tag_of(name: str, backend: Backend) -> str:
     return backend.name_tag or _clean(name.replace("-", "_"))
 
 
+def prefixed(
+    wanted: list[Pair],
+    prefixes: dict[str, str],
+    issued: dict[str, Pair],
+    retired: set[str],
+) -> tuple[dict[str, Pair], dict[str, Pair]]:
+    """Names forced by ``tool_prefix``: which to issue, and which to retire.
+
+    A forced name already held by another tool, live or retired, is not
+    taken: that tool keeps its name, this one falls back to rules 1-3, and
+    the clash is logged by backend for the operator to resolve.
+
+    Returns:
+        ``(issue, retire)``: forced names not yet issued, and the names they
+        replace.
+    """
+    by_pair = {pair: name for name, pair in issued.items()}
+    issue: dict[str, Pair] = {}
+    retire: dict[str, Pair] = {}
+    for pair in wanted:
+        prefix = prefixes.get(pair[0])
+        if prefix is None:
+            continue
+        name = f"{prefix}_{_clean(pair[1].removesuffix('_tool')) or _clean(pair[1])}"
+        if by_pair.get(pair) == name:
+            continue
+        holder = issued.get(name)
+        if (holder is not None and holder != pair) or name in retired:
+            logger.warning("tool_prefix name already held; backend=%s keeps its name", pair[0])
+            continue
+        issue[name] = pair
+        if pair in by_pair:
+            retire[by_pair[pair]] = pair
+    return issue, retire
+
+
 def assign(
     wanted: list[Pair],
     tags: dict[str, str],
     issued: dict[str, Pair],
+    reserved: set[str] | frozenset[str] = frozenset(),
 ) -> tuple[dict[Pair, str], dict[str, Pair]]:
     """The served name of every wanted tool, and which names are new.
 
@@ -110,6 +160,7 @@ def assign(
         tags: each backend's tag.
         issued: every name issued to this profile before, including names
             of tools it no longer serves: those stay reserved.
+        reserved: retired names, never issued again.
 
     Returns:
         ``(served, new)``: the name per tool, and the names to record.
@@ -125,7 +176,7 @@ def assign(
         for tool, short in base_names(backend, names).items()
     }
     clashes = Counter(base.values())
-    taken = set(issued)
+    taken = set(issued) | set(reserved)
     new: dict[str, Pair] = {}
     for pair in wanted:
         if pair in served:
@@ -168,13 +219,23 @@ def serve_short_names(profile: Profile, tools: list[dict[str, Any]]) -> list[dic
         backend, _, name = tool["name"].partition(NAMESPACE_SEP)
         pairs.append((backend, name))
     tags = {b: tag_of(b, backend) for b, backend in profile.backends.items()}
-    served, new = assign(pairs, tags, _issued_names(profile.name))
+    prefixes = {b: be.tool_prefix for b, be in profile.backends.items() if be.tool_prefix}
+    retired = retired_tool_names(profile.name) if prefixes else set()
+    if prefixes:
+        forced, old = prefixed(pairs, prefixes, _issued_names(profile.name), retired)
+        if forced:
+            # Retire first: the table holds one live name per tool.
+            retire_tool_names(profile.name, old)
+            issue_tool_names(profile.name, forced)
+            _issued[profile.name] = issued_tool_names(profile.name)
+            retired |= set(old)
+    served, new = assign(pairs, tags, _issued_names(profile.name), retired)
     if new:
         # Recorded, then read back: a row another writer got in first wins,
         # and this list is assigned again around it.
         issue_tool_names(profile.name, new)
         _issued[profile.name] = issued_tool_names(profile.name)
-        served, new = assign(pairs, tags, _issued[profile.name])
+        served, new = assign(pairs, tags, _issued[profile.name], retired)
         issue_tool_names(profile.name, new)
         _issued[profile.name].update(new)
     return [{**tool, "name": served[pair]} for tool, pair in zip(tools, pairs, strict=True)]

@@ -239,6 +239,17 @@ takes the tag. Only the edge sees short names. Allowlists, literal request guard
 `preprocess_tools`, the verdict cache and the audit log all keep using the real
 backend and tool names.
 
+Where a name must say which backend a call reaches every time, not only on a
+collision, set `tool_prefix` (6.31.0): every tool of that backend is served as
+`<prefix>_<tool>`, whole, with no word dropped. Two memory stores are the case
+it exists for: `work_memory_store` and `personal_memory_store` read the same on
+a seat that sees both stores and on one that sees only its own. Setting it on a
+backend whose tools were already issued renames them; the old names are retired
+(`retired_tool_names`), reserved for good and never resolved for a live call, so
+an agent holding `memory_store` gets an unknown tool, never the other store.
+Credential replay still resolves them, since a transcript means what it meant
+then. Two backends in one profile may not share a prefix.
+
 `short_names: false` on a profile serves the old `<backend>__<tool>` form.
 On a short-names profile only the names `tools/list` served route; the
 `<backend>__<tool>` fallback was removed in 0.43.0.

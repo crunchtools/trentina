@@ -193,6 +193,9 @@ profiles:
       mail-work:
         url: http://mail-work:8000/mcp
         name_tag: work       # work_send_gmail_message, not mail_work_send_...
+      memory-work:
+        url: http://memory-work:8000/mcp
+        tool_prefix: work    # ALWAYS work_memory_store, collision or not (6.31.0)
 ```
 
 A client without its own tool search can be listed less:
