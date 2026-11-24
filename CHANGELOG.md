@@ -10,6 +10,10 @@ under that name.
 
 ## [Unreleased]
 
+### Fixed
+
+- **SECURITY.md's out-of-scope list points at a file that exists (a1208).** It linked the per-repo constitution's Threat Model, which #935 deleted, so Gourmand's documentation-link check failed on main. The link now goes to `.oss-scanner/threat_model.md#out-of-scope`, which carries the same "Not defended" list, and names its entries inline.
+
 ## [6.31.0] - 2026-11-24
 
 ### Added
