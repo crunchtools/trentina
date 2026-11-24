@@ -403,3 +403,6 @@ tests = [
 ]
 env = { GEMINI_API_KEY = "test_key_for_ci", TRENTINA_REQUIRE_L2_MODEL = "1", CLASSIFIER_THREADS = "1" }
 
+
+[tool.sdlc]
+repo-kinds = ["security-gateway"]
