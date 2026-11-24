@@ -206,6 +206,25 @@ def _issued_names(profile_name: str) -> dict[str, Pair]:
     return names
 
 
+def _apply_prefixes(profile: Profile, pairs: list[Pair]) -> set[str]:
+    """Issue every ``tool_prefix`` name and retire what it replaces.
+
+    Returns:
+        The profile's retired names, which ``assign`` must never issue.
+    """
+    prefixes = {b: be.tool_prefix for b, be in profile.backends.items() if be.tool_prefix}
+    if not prefixes:
+        return set()
+    retired = retired_tool_names(profile.name)
+    forced, old = prefixed(pairs, prefixes, _issued_names(profile.name), retired)
+    if forced:
+        # Retire first: the table holds one live name per tool.
+        retire_tool_names(profile.name, old)
+        issue_tool_names(profile.name, forced)
+        _issued[profile.name] = issued_tool_names(profile.name)
+    return retired | set(old)
+
+
 def serve_short_names(profile: Profile, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The aggregate, ``<backend>__<tool>`` names in, served names out.
 
@@ -214,21 +233,11 @@ def serve_short_names(profile: Profile, tools: list[dict[str, Any]]) -> list[dic
     """
     if not profile.short_names:
         return tools
-    pairs: list[Pair] = []
-    for tool in tools:
-        backend, _, name = tool["name"].partition(NAMESPACE_SEP)
-        pairs.append((backend, name))
+    pairs: list[Pair] = [
+        (backend, name) for backend, _, name in (t["name"].partition(NAMESPACE_SEP) for t in tools)
+    ]
     tags = {b: tag_of(b, backend) for b, backend in profile.backends.items()}
-    prefixes = {b: be.tool_prefix for b, be in profile.backends.items() if be.tool_prefix}
-    retired = retired_tool_names(profile.name) if prefixes else set()
-    if prefixes:
-        forced, old = prefixed(pairs, prefixes, _issued_names(profile.name), retired)
-        if forced:
-            # Retire first: the table holds one live name per tool.
-            retire_tool_names(profile.name, old)
-            issue_tool_names(profile.name, forced)
-            _issued[profile.name] = issued_tool_names(profile.name)
-            retired |= set(old)
+    retired = _apply_prefixes(profile, pairs)
     served, new = assign(pairs, tags, _issued_names(profile.name), retired)
     if new:
         # Recorded, then read back: a row another writer got in first wins,

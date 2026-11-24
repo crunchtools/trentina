@@ -110,6 +110,31 @@ def test_served_name_shape(tmp_path, profiles, db, capsys):
     assert doc["profiles"]["exedore-max"]["needs"] == {"aws": {"put_object": {"aws_access_key": 1}}}
 
 
+def test_a_retired_name_resolves_to_what_it_meant(tmp_path, profiles, db, capsys):
+    """6.31.0: a transcript can predate a tool_prefix rename."""
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE TABLE retired_tool_names (profile, issued, backend, tool, retired_at)")
+    conn.execute(
+        "INSERT INTO retired_tool_names VALUES (?, ?, ?, ?, 'now')",
+        ("exedore-max", "old_put", "aws", "put_object"),
+    )
+    conn.commit()
+    conn.close()
+    f = write(tmp_path, {"profile": "exedore-max", "name": "old_put", "arguments": {"k": AWS}})
+    code, out = run(capsys, profiles, db, str(f), "--json")
+    assert code == 1
+    assert json.loads(out)["profiles"]["exedore-max"]["needs"] == {
+        "aws": {"put_object": {"aws_access_key": 1}}
+    }
+
+
+def test_a_db_without_retired_names_still_replays(tmp_path, profiles, db, capsys):
+    """A gateway older than 6.31.0 has no retired_tool_names table."""
+    f = write(tmp_path, {"profile": "exedore-max", "name": "put_object", "arguments": {"k": AWS}})
+    code, _ = run(capsys, profiles, db, str(f), "--json")
+    assert code == 1
+
+
 def test_long_form_name_when_short_names_off(tmp_path, profiles, db, capsys):
     f = write(tmp_path, {"profile": "longform", "name": "github__make", "arguments": {"k": KEY}})
     code, out = run(capsys, profiles, db, str(f), "--json")
