@@ -22,6 +22,7 @@ from trentina.defense import Screened
 from trentina.gateway import git_judge
 from trentina.l1.pipeline import PipelineResult, PipelineStats
 from trentina.l1.shadows import ShadowStats
+from trentina.quarantine import quota
 from trentina.quarantine.classifier import ClassifierResult
 from trentina.unpack.git_pack import PackObject
 
@@ -199,6 +200,39 @@ async def test_a_detection_row_that_cannot_be_written_leaves_the_flag(
     assert _flagged(judge) == {bad.oid: "L2"}
     assert "detection row lost" in caplog.text
     assert L2_MARK not in caplog.text and "disk full" not in caplog.text
+
+
+async def test_l3_in_judging_is_charged_to_the_grant_not_the_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The quota is set around the background task, so a real charge reaches
+    the grant's counter and never the profile's."""
+    profile = harness.profile()
+    grant = profile.git[harness.REMOTE].model_copy(update={"l3_daily_quota": 1})
+
+    async def charged(*_args: Any) -> dict[str, Any]:
+        if quota.charge_for_call(profile) is None:
+            return {"injection_detected": False, "l3_unavailable": True, "l3_quota": True}
+        return {"injection_detected": False, "risk_level": "none"}
+
+    monkeypatch.setattr(git_judge, "judge_l3", charged)
+    quota.reset()
+    judge = git_judge.GitJudge(
+        profile=profile,
+        grant=grant,
+        source="git:forge/acme/widgets",
+        call_ref="ref",
+        chunk_secret=b"k" * 32,
+    )
+    first, second = _blob(f"{BORDER} one\n"), _blob(f"{BORDER} two\n")
+    judge.submit(first)
+    judge.submit(second)
+    judge.close()
+    await judge.start(60.0)
+    assert [gap for _k, _oid, gap in judge.outcome().unjudged] == ["l3_quota"]
+    assert quota._git_usage[profile.grant_owner][1] == 1
+    assert profile.name not in quota._usage, "the profile's counter is untouched"
+    quota.reset()
 
 
 async def test_a_flagged_name_in_a_listing_is_found() -> None:
