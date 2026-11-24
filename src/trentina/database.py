@@ -167,6 +167,18 @@ CREATE TABLE IF NOT EXISTS tool_names (
     UNIQUE (profile, backend, tool)
 );
 
+-- 6.31.0: a name a backend's tool_prefix replaced. Still reserved, so it is
+-- never issued to another tool, and never resolved for a live call: an agent
+-- holding the old name gets an unknown tool, not a different backend.
+CREATE TABLE IF NOT EXISTS retired_tool_names (
+    profile TEXT NOT NULL,
+    issued TEXT NOT NULL,
+    backend TEXT NOT NULL,
+    tool TEXT NOT NULL,
+    retired_at TEXT NOT NULL,
+    PRIMARY KEY (profile, issued)
+);
+
 -- One row per (URL, owner) since 6.1.0. A tool list is whatever the backend
 -- returned to the credential that asked for it, so a single row per URL served
 -- one holder the list another holder's token had earned. A backend that carries
@@ -1387,6 +1399,35 @@ def issued_tool_name(profile: str, issued: str) -> tuple[str, str] | None:
         .fetchone()
     )
     return (row["backend"], row["tool"]) if row else None
+
+
+def retired_tool_names(profile: str) -> set[str]:
+    """Names a tool_prefix replaced in a profile: reserved, never served again."""
+    rows = (
+        get_db()
+        .execute("SELECT issued FROM retired_tool_names WHERE profile = ?", (profile,))
+        .fetchall()
+    )
+    return {row["issued"] for row in rows}
+
+
+def retire_tool_names(profile: str, names: dict[str, tuple[str, str]]) -> None:
+    """Move issued names to retired_tool_names in one transaction."""
+    if not names:
+        return
+    db = get_db()
+    now = datetime.now(UTC).isoformat()
+    rows = [(profile, issued, backend, tool, now) for issued, (backend, tool) in names.items()]
+    with db:
+        db.executemany(
+            "INSERT OR IGNORE INTO retired_tool_names (profile, issued, backend, tool, retired_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+        db.executemany(
+            "DELETE FROM tool_names WHERE profile = ? AND issued = ? AND backend = ? AND tool = ?",
+            [r[:4] for r in rows],
+        )
 
 
 def issue_tool_names(profile: str, names: dict[str, tuple[str, str]]) -> None:
