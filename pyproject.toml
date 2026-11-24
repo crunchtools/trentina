@@ -406,3 +406,14 @@ env = { GEMINI_API_KEY = "test_key_for_ci", TRENTINA_REQUIRE_L2_MODEL = "1", CLA
 
 [tool.sdlc]
 repo-kinds = ["security-gateway"]
+# The release image is built by the `image` job, which plans the container build.
+stacks = ["container"]
+
+[tool.sdlc.image]
+# Written by crunchtools/sdlc's scripts/convert_repo.py: moved from the workflows.
+image = "quay.io/crunchtools/trentina"
+boot = "mcp"
+boot-run-args = "--tmpfs /data:mode=1777"
+
+[tool.sdlc.ci.container-build]
+build_args = { VERSION = "@project.version" }
