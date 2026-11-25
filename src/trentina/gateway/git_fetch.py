@@ -508,32 +508,40 @@ class _FetchRelay:
         if self.busy or not _slots.take(fetch.profile.name):
             self.busy = True
             return None
-        op.call_ref = op.call_ref or new_call_ref()
-        self.judge = GitJudge(
-            profile=fetch.profile,
-            grant=fetch.grant,
-            source=fetch.source,
-            call_ref=op.call_ref,
-            chunk_secret=chunk_secret(),
-            wants=fetch.wants,
-            oid_len=_OID_BYTES.get(fetch.object_format, _DEFAULT_OID_BYTES),
-        )
-        config = get_config()
-        config.ensure_perimeter_db_dir()
-        reading = _Reading(
-            object_format=fetch.object_format,
-            max_arrived=fetch.grant.max_judged_pack_bytes,
-            max_inflated=DEFAULT_LIMITS.max_inflated,
-            deadline=fetch.grant.judge_deadline,
-            spool_dir=str(Path(config.perimeter_db_path).parent),
-        )
-        task = self.judge.start(float(fetch.grant.judge_deadline))
-        self.feeder = _Feeder(reading, self.judge)
-        hold = asyncio.ensure_future(
-            _hold(fetch.profile.name, task, self.feeder, float(fetch.grant.judge_deadline))
-        )
-        _CLOSING.add(hold)
-        hold.add_done_callback(_CLOSING.discard)
+        task: asyncio.Task[None] | None = None
+        try:
+            op.call_ref = op.call_ref or new_call_ref()
+            self.judge = GitJudge(
+                profile=fetch.profile,
+                grant=fetch.grant,
+                source=fetch.source,
+                call_ref=op.call_ref,
+                chunk_secret=chunk_secret(),
+                wants=fetch.wants,
+                oid_len=_OID_BYTES.get(fetch.object_format, _DEFAULT_OID_BYTES),
+            )
+            config = get_config()
+            config.ensure_perimeter_db_dir()
+            reading = _Reading(
+                object_format=fetch.object_format,
+                max_arrived=fetch.grant.max_judged_pack_bytes,
+                max_inflated=DEFAULT_LIMITS.max_inflated,
+                deadline=fetch.grant.judge_deadline,
+                spool_dir=str(Path(config.perimeter_db_path).parent),
+            )
+            task = self.judge.start(float(fetch.grant.judge_deadline))
+            self.feeder = _Feeder(reading, self.judge)
+            hold = asyncio.ensure_future(
+                _hold(fetch.profile.name, task, self.feeder, float(fetch.grant.judge_deadline))
+            )
+            _CLOSING.add(hold)
+            hold.add_done_callback(_CLOSING.discard)
+        except BaseException:
+            # _hold gives the slot back once it runs; before that, this does.
+            if task is not None:
+                task.cancel()
+            _slots.release(fetch.profile.name)
+            raise
         return self.feeder
 
     async def _feed(self, pack: bytes) -> None:
