@@ -10,6 +10,13 @@ under that name.
 
 ## [Unreleased]
 
+### Security
+- The image builds OpenCV 5.1.0 from hash-pinned source with only core,
+  imgproc and imgcodecs, in place of the opencv-python-headless wheel, whose
+  bundled FFmpeg 9.0.2 carried CVE-2026-135736 and CVE-2026-135743 (critical)
+  plus about 18 High and Medium CVEs. The gateway never used video I/O; the
+  image now ships no FFmpeg at all.
+
 ## [6.31.0] - 2026-11-24
 
 ### Added
