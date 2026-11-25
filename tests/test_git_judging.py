@@ -695,6 +695,18 @@ class TestJudgingSlots:
         assert "Trentina: unjudged pack (busy)" in _remote(output), "the profile is at its cap"
         assert await _slots_free()
 
+    async def test_a_setup_that_fails_after_the_reservation_gives_the_slot_back(
+        self, judged: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def broken(*_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("the reader config could not be built")
+
+        monkeypatch.setattr(git_fetch, "_Reading", broken)
+        judged.repo.plant({"notes.txt": b"some notes\n"})
+        await judged.repo.clone(judged, "2")
+        assert git_fetch._slots.total == 0
+        assert not git_fetch._slots.by_profile
+
     def test_another_profile_still_gets_a_slot_when_one_is_at_its_cap(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -722,6 +734,16 @@ def _bare_judge() -> git_judge.GitJudge:
 
 
 class TestJudgeBounds:
+    async def test_a_pack_with_more_objects_than_the_judge_tracks_is_delivered_whole_and_named(
+        self, judged: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(git_judge, "MAX_TRACKED_OBJECTS", 2)
+        judged.repo.plant({"notes.txt": b"some notes\n", "more.txt": b"more notes\n"})
+        code, output = await judged.repo.clone(judged, "2")
+        assert code == 0, output
+        assert "Trentina: unjudged pack (too_many)" in _remote(output), output
+        assert (judged.repo.work / "notes.txt").read_text() == "some notes\n"
+
     def test_a_tree_past_the_byte_bound_is_unjudged_not_dropped(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

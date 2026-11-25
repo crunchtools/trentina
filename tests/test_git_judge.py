@@ -654,3 +654,35 @@ async def test_one_large_object_is_read_at_a_time_per_fetch(
     judge = _fresh()
     await asyncio.gather(*(judge.add(_blob(f"{n} line\n" * 1000)) for n in range(4)))
     assert peak == 1
+
+
+async def test_a_large_object_cancelled_mid_read_is_a_deadline_gap_and_its_late_result_is_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started, release = threading.Event(), threading.Event()
+    real = git_judge.chunk_blob
+
+    def blocked(content: bytes, secret: bytes) -> Any:
+        started.set()
+        release.wait(10)
+        return real(content, secret)
+
+    monkeypatch.setattr(git_judge, "chunk_blob", blocked)
+    blob = _blob(f"x\n{L2_MARK}\n" + "a short line\n" * 1000)
+    judge = _fresh()
+    adding = asyncio.ensure_future(judge.add(blob))
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    adding.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await adding
+    assert judge.outcome().unjudged == [("blob", blob.oid, "deadline")]
+    release.set()
+    await asyncio.get_running_loop().run_in_executor(git_judge._POOL, lambda: None)
+    judge.close()
+    await judge.start(60.0)
+    outcome = judge.outcome()
+    assert outcome.unjudged == [("blob", blob.oid, "deadline")]
+    assert not outcome.flagged
+    assert judge.stats["units"] == 0, "the late chunks were never added"
+    assert not git_judge._memory, "no verdict was cached for the object"
