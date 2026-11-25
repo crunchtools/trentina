@@ -563,12 +563,7 @@ class GitJudge:
             except TimeoutError:
                 self._expire("deadline")
             except Exception as exc:
-                logger.error(
-                    "git judge: judging failed for %s: %s at %s",
-                    self.source,
-                    exc_kind(exc),
-                    exc_where(exc),
-                )
+                logger.error("git judge: judging failed: %s at %s", exc_kind(exc), exc_where(exc))
                 self._expire("failed")
             finally:
                 self._settled.set()
