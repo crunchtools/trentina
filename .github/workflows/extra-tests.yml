@@ -24,42 +24,9 @@ concurrency:
 permissions: {}
 
 jobs:
-  # Lint, types and the suite moved to `security.yml`'s `sdlc ci` job, which
-  # runs them from python-sdlc at the release .pre-commit-config.yaml pins --
-  # the image and commands the laptop runs. What stays here needs a secret or
-  # runs only after merge.
-
-  # The approval pages in real Chrome (RT#1609). A browser chooses some request
-  # headers itself -- Origin above all -- so a TestClient or curl replay cannot
-  # show what a person's submission does; this can. Needs no secret, so it runs
-  # on every pull request. The runner image ships Chrome; naming it with
-  # --browser-path makes a missing browser fail the job rather than skip it.
-  browser:
-    name: Approval pages in a real browser
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          version: "0.13.7"
-
-      - name: Set up Python 3.14
-        run: uv python install 3.14
-
-      - name: Install dependencies
-        run: uv sync --all-extras --locked
-
-      - name: Drive the approval pages in Chrome
-        run: >-
-          uv run --with playwright==1.65.1
-          pytest -o addopts="" -p no:cacheprovider tests/browser -v
-          --browser-path /usr/bin/google-chrome
+  # Lint, types, the suite and the browser tests run in ci.yml's `sdlc / check`
+  # ([tool.sdlc.ci] in pyproject.toml). What stays here needs a secret and runs
+  # only after merge.
 
   live-l3:
     name: Live L3 Detection (OpenRouter)
