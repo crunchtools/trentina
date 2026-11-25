@@ -15,4 +15,8 @@ USER 1001
 
 EXPOSE 8097
 
+# The boot gate in sdlc's image job (boot = "healthcheck" in pyproject.toml).
+HEALTHCHECK --interval=5s --timeout=3s --retries=6 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8097/info', timeout=2)"]
+
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8097", "--log-level", "warning"]
