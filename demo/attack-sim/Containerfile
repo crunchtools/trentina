@@ -15,4 +15,11 @@ USER 1001
 
 EXPOSE 8097
 
+# The boot gate in sdlc's image job (boot = "healthcheck" in pyproject.toml):
+# the site answers both / and /info, as demo-container.yml's curl check required.
+# / serves its intro only to a CLI agent's User-Agent (server.py's
+# challenge_root), so the probe says curl, as that check's request did.
+HEALTHCHECK --interval=5s --timeout=3s --retries=6 \
+    CMD ["python", "-c", "import urllib.request as u; u.urlopen(u.Request('http://127.0.0.1:8097/', headers={'User-Agent': 'curl'}), timeout=2); u.urlopen('http://127.0.0.1:8097/info', timeout=2)"]
+
 CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8097", "--log-level", "warning"]

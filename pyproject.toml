@@ -307,7 +307,8 @@ ignore_missing_imports = true
 asyncio_mode = "auto"
 # tests/image/ runs INSIDE the built image (python-sdlc `pytest-in-image`), so
 # the suite outside it leaves that directory alone. tests/browser/ drives real
-# Chrome, which that image does not have; CI's `browser` job runs it.
+# Chromium, which that image does not have; the `browser` check in
+# [tool.sdlc.ci] runs it in its own image.
 addopts = "-n auto --ignore=tests/image --ignore=tests/browser"
 testpaths = ["tests"]
 pythonpath = ["src"]
@@ -326,6 +327,13 @@ ignore_missing_imports = true
 [[tool.mypy.overrides]]
 module = ["nio", "nio.*"]
 ignore_missing_imports = true
+
+# Playwright for tests/browser, locked like everything else and installed only
+# into the image the `browser` check builds (tests/browser/Containerfile). A
+# group, not an extra: it is never part of the published package's metadata,
+# and `uv sync` leaves it out unless asked.
+[dependency-groups]
+browser = ["playwright==1.65.1"]
 
 [tool.uv]
 # rapidocr requires `opencv-python`; we install `opencv-python-headless`
@@ -375,9 +383,9 @@ env = { GEMINI_API_KEY = "test_key_for_ci" }
 paths = ["src"]
 
 [tool.sdlc.ci]
-checks = ["image", "image-tests"]
+checks = ["image", "image-tests", "browser-image", "browser"]
 
-# The image the in-image tests run against; container.yml builds the published one.
+# The image the in-image tests run against; ci.yml's `image` job builds the published one.
 [tool.sdlc.ci.image]
 kind = "image-build"
 build_args = { VERSION = "@project.version" }
@@ -403,6 +411,44 @@ tests = [
 ]
 env = { GEMINI_API_KEY = "test_key_for_ci", TRENTINA_REQUIRE_L2_MODEL = "1", CLASSIFIER_THREADS = "1" }
 
+# The approval pages in real Chromium (RT#1609). A browser chooses some request
+# headers itself -- Origin above all -- so a TestClient or curl replay cannot
+# show what a person's submission does; this can. The image is Python 3.14, the
+# locked dependencies and Chromium (tests/browser/Containerfile); the checkout
+# is the code under test. Naming the browser with --browser-path makes a
+# missing one fail the check rather than skip it.
+[tool.sdlc.ci.browser-image]
+kind = "image-build"
+containerfile = "tests/browser/Containerfile"
+tag = "localhost/trentina-browser:sdlc"
+
+[tool.sdlc.ci.browser]
+kind = "command"
+image = "localhost/trentina-browser:sdlc"
+argv = [
+  "python", "-m", "pytest", "-o", "addopts=", "-p", "no:cacheprovider",
+  "tests/browser", "-v", "--browser-path", "/usr/bin/chromium",
+]
+
 
 [tool.sdlc]
 repo-kinds = ["security-gateway"]
+# The release image is built by the `image` job, which plans the container build.
+stacks = ["container"]
+
+[tool.sdlc.image]
+# Written by crunchtools/sdlc's scripts/convert_repo.py: moved from the workflows.
+image = "quay.io/crunchtools/trentina"
+boot = "mcp"
+boot-run-args = "--tmpfs /data:mode=1777"
+
+[tool.sdlc.ci.container-build]
+build_args = { VERSION = "@project.version" }
+
+# The attack-simulation demo site, published as quay.io/crunchtools/trentina-demo
+# by the same image and promote jobs as trentina itself.
+[[tool.sdlc.images]]
+name = "trentina-demo"
+containerfile = "demo/attack-sim/Containerfile"
+context = "demo/attack-sim"
+boot = "healthcheck"
