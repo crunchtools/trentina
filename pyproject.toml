@@ -328,6 +328,13 @@ ignore_missing_imports = true
 module = ["nio", "nio.*"]
 ignore_missing_imports = true
 
+# Playwright for tests/browser, locked like everything else and installed only
+# into the image the `browser` check builds (tests/browser/Containerfile). A
+# group, not an extra: it is never part of the published package's metadata,
+# and `uv sync` leaves it out unless asked.
+[dependency-groups]
+browser = ["playwright==1.65.1"]
+
 [tool.uv]
 # rapidocr requires `opencv-python`; we install `opencv-python-headless`
 # instead (see the dependency comment above). A marker that is never true
@@ -378,7 +385,7 @@ paths = ["src"]
 [tool.sdlc.ci]
 checks = ["image", "image-tests", "browser-image", "browser"]
 
-# The image the in-image tests run against; container.yml builds the published one.
+# The image the in-image tests run against; ci.yml's `image` job builds the published one.
 [tool.sdlc.ci.image]
 kind = "image-build"
 build_args = { VERSION = "@project.version" }
