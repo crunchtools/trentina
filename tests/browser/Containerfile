@@ -17,8 +17,9 @@ ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     UV_PYTHON_DOWNLOADS=never \
     UV_LINK_MODE=copy
 
-# The locked set, with the `browser` group's Playwright, less petit-plus: it is a path source under tests/fixtures,
-# which .dockerignore keeps out of the context. --frozen installs uv.lock as
+# The locked set, with the `browser` group's Playwright, less petit-plus: it is
+# a path source under tests/fixtures, which .containerignore (it excludes
+# tests/) keeps out of the context. --frozen installs uv.lock as
 # written; `sdlc ci`'s own `uv sync --locked` holds it to pyproject.toml.
 WORKDIR /build
 COPY pyproject.toml uv.lock ./
