@@ -50,7 +50,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
@@ -71,7 +71,7 @@ from ..transports.base import (
 )
 from ..transports.perimeter import InTree
 from .destination import MAX_DESTINATION_CHARS
-from .git_fetch import Fetch, enter_lane, relay_fetch, relay_listing, relay_push
+from .git_fetch import Fetch, at_tips, enter_lane, relay_fetch, relay_listing, relay_push
 from .git_wire import (
     FLUSH,
     INFO_REFS,
@@ -290,6 +290,11 @@ class GitRoute(Route[GitAdmitted, InTree]):
         if negotiation is not None and negotiation.wants:
             # A judged fetch waits for its lane before the forge is asked, and
             # gives it back when the operation finishes, however it ends.
+            if negotiation.promisor and at_tips(
+                ctx.profile.name, admitted.path.slug, negotiation.wants
+            ):
+                # A filtered clone, not a lazy fetch: what it wants is a ref tip.
+                negotiation = replace(negotiation, promisor=False, cold=True)
             lane = await enter_lane(ctx.profile.name, negotiation.promisor)
             op.upstream.callback(lane.release)
         return await self._answer(admitted, ctx, headers, content, negotiation)

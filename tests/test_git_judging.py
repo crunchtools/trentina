@@ -588,6 +588,19 @@ class TestAPushReport:
 # --- background slots ----------------------------------------------------------
 
 
+def _spy_take(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Whether each judging slot taken from here on was taken as cold."""
+    taken: list[bool] = []
+    real = git_fetch._slots.take
+
+    def spy(profile: str, *, cold: bool = False) -> bool:
+        taken.append(cold)
+        return real(profile, cold=cold)
+
+    monkeypatch.setattr(git_fetch._slots, "take", spy)
+    return taken
+
+
 async def _slots_free(timeout: float = 10.0) -> bool:
     for _ in range(int(timeout / 0.02)):
         if git_fetch._slots.total == 0:
@@ -602,6 +615,8 @@ async def no_slot_leaks() -> Any:
     git_fetch._slots.total = 0
     git_fetch._slots.cold = 0
     git_fetch._slots.by_profile.clear()
+    git_fetch._tips.clear()
+    git_fetch._tips_held = 0
     yield
     assert await _slots_free(), "a judging slot was never given back"
 
@@ -735,20 +750,94 @@ class TestJudgingSlots:
     async def test_a_clone_is_counted_cold_and_gives_its_cold_slot_back(
         self, judged: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        taken: list[bool] = []
-        real = git_fetch._slots.take
-
-        def spy(profile: str, *, cold: bool = False) -> bool:
-            taken.append(cold)
-            return real(profile, cold=cold)
-
-        monkeypatch.setattr(git_fetch._slots, "take", spy)
+        taken = _spy_take(monkeypatch)
         judged.repo.plant({"notes.txt": b"some notes\n"})
         code, output = await judged.repo.clone(judged, "2")
         assert code == 0, output
         assert taken == [True]
         assert await _slots_free()
         assert git_fetch._slots.cold == 0
+
+    async def test_a_filtered_clone_of_the_tips_is_cold_and_its_lazy_fetch_is_not(
+        self, judged: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        taken = _spy_take(monkeypatch)
+        repo = judged.repo
+        repo.git("config", "uploadpack.allowFilter", "true", cwd=repo.bare)
+        code, output = await harness.git(
+            repo.home, judged.port, "-c", "protocol.version=2", "clone",
+            "--filter=blob:none", "GATEWAY/acme/widgets", str(repo.work),
+        )  # fmt: skip
+        assert code == 0, output
+        assert (repo.work / "README.md").read_text() == "A small library.\n"
+        assert taken[0] is True, "the clone of the tips"
+        assert taken[1:] and not any(taken[1:]), "the checkout's lazy blob fetch stays warm"
+        assert await _slots_free()
+
+    async def test_a_size_limited_filtered_clone_is_cold(
+        self, judged: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        taken = _spy_take(monkeypatch)
+        repo = judged.repo
+        repo.git("config", "uploadpack.allowFilter", "true", cwd=repo.bare)
+        code, output = await harness.git(
+            repo.home, judged.port, "-c", "protocol.version=0", "clone",
+            "--filter=blob:limit=1g", "GATEWAY/acme/widgets", str(repo.work),
+        )  # fmt: skip
+        assert code == 0, output
+        assert taken == [True]
+
+    @pytest.mark.parametrize("have", ["bogus", "unrelated"])
+    async def test_a_have_the_forge_cannot_use_is_cold_by_the_packs_count(
+        self, judged: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Any, have: str
+    ) -> None:
+        monkeypatch.setattr(git_fetch, "COLD_PACK_OBJECTS", 4)
+        taken = _spy_take(monkeypatch)
+        repo = judged.repo
+        if have == "bogus":
+            oid = "0" * 40
+        else:
+            other = tmp_path / "other"
+            harness.git_sync(repo.home, "init", "-b", "main", str(other))
+            (other / "x.txt").write_text("another project\n")
+            harness.git_sync(repo.home, "add", "-A", cwd=other)
+            harness.git_sync(repo.home, "commit", "-m", "elsewhere", cwd=other)
+            oid = harness.git_sync(repo.home, "rev-parse", "HEAD", cwd=other)
+        body = (
+            pkt(f"want {repo.rev('HEAD')} side-band-64k ofs-delta\n".encode())
+            + FLUSH
+            + pkt(f"have {oid}\n".encode())
+            + pkt(b"done\n")
+        )
+        response = await judged.client.post(
+            f"{judged.url}/acme/widgets/git-upload-pack",
+            content=body,
+            headers={"Content-Type": UPLOAD_REQUEST},
+        )
+        assert response.status_code == 200
+        assert taken == [True], "the whole history came back: five objects"
+        assert await _slots_free()
+
+    async def test_a_fetch_with_a_valid_have_is_cold_only_when_its_pack_is_large(
+        self, judged: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(git_fetch, "COLD_PACK_OBJECTS", 4)
+        repo = judged.repo
+        code, output = await repo.clone(judged, "2")
+        assert code == 0, output
+        taken = _spy_take(monkeypatch)
+        repo.plant({"one.txt": b"one more file\n"})
+        code, output = await harness.git(
+            repo.home, judged.port, "fetch", "origin", cwd=repo.work
+        )  # fmt: skip
+        assert code == 0, output
+        repo.plant({f"f{n}.txt": f"file number {n}\n".encode() for n in range(6)})
+        code, output = await harness.git(
+            repo.home, judged.port, "fetch", "origin", cwd=repo.work
+        )  # fmt: skip
+        assert code == 0, output
+        assert taken == [False, True], "three objects, then eight"
+        assert await _slots_free()
 
     def test_another_profile_still_gets_a_slot_when_one_is_at_its_cap(
         self, monkeypatch: pytest.MonkeyPatch

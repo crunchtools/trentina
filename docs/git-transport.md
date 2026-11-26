@@ -246,9 +246,13 @@ A profile's judged fetches run one at a time in two lanes, `fetch` and
 `promisor` (a partial clone's lazy fetches), so a checkout never waits
 behind a clone. A fetch that finds its lane busy waits, up to four of them,
 and past that is refused `busy`. Large objects are read on two threads
-shared by the gateway, one of them at most for any one profile. A clone (a
-fetch with no `have`) takes at most half of `TRENTINA_GIT_JUDGES`' slots, so
-the fetches that can finish judging still find one.
+shared by the gateway, one of them at most for any one profile. A clone
+takes at most half of `TRENTINA_GIT_JUDGES`' slots, so the fetches that can
+finish judging still find one. A fetch counts as a clone when its request has
+no `have`, when it is filtered and wants a ref tip the repository's last
+listing showed (a partial clone's lazy blob fetch wants no tip), or when the
+forge's pack declares more than 1,000 objects, whatever `have` lines the
+request carried.
 
 **Clones made before phase 1 hold history no layer read.** A fetch brings
 only what is new, and judging does not reach back into a checkout: re-clone

@@ -24,6 +24,7 @@ from trentina.gateway.git_wire import (
     check_upload_request,
     is_cold_fetch,
     is_promisor_fetch,
+    listed_tips,
     negotiated_sideband,
     parse_command,
     parse_repo_path,
@@ -577,6 +578,15 @@ class TestRequestReading:
         v0 = pkt(b"want " + ONE + b" side-band-64k filter\n") + pkt(b"filter blob:none\n")
         assert is_promisor_fetch(v0 + b"0000", None)
         assert not is_promisor_fetch(pkt(b"want " + ONE + EOL) + b"0000", None)
+
+    def test_the_listed_tips_are_each_refs_and_each_peeled_tags_object(self) -> None:
+        v2 = pkt(b"%s refs/heads/main symref-target:x\n" % ONE) + pkt(
+            b"%s refs/tags/v1 peeled:%s\n" % (TWO, ONE)
+        )
+        assert listed_tips(v2 + b"0000") == [ONE.decode(), TWO.decode(), ONE.decode()]
+        zero = b"0" * 40
+        v0 = pkt(zero + b" capabilities^{}\0side-band-64k\n") + pkt(TWO + b" refs/tags/v1^{}\n")
+        assert listed_tips(v0 + b"0000") == [TWO.decode()]
 
     def test_a_cold_fetch_has_wants_and_no_haves(self) -> None:
         assert is_cold_fetch(_fetch_v2(b"want " + ONE, b"done"), V2)

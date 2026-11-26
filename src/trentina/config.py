@@ -6,6 +6,7 @@ import functools
 import ipaddress
 import json
 import logging
+import math
 import os
 import socket
 from fnmatch import fnmatch
@@ -763,12 +764,19 @@ class Config:
     def git_suspicious(self) -> float:
         """``TRENTINA_GIT_SUSPICIOUS``: the L2 score over which a git unit goes to L3 alone.
 
-        A value that is not a number takes the default, as ``int_env`` does."""
+        A value that is not a score, a number from 0 to 1, takes the default,
+        as ``int_env`` does: ``nan`` compares false with every score and would
+        send no unit to L3 alone."""
         try:
-            return float(os.environ.get("TRENTINA_GIT_SUSPICIOUS", DEFAULT_GIT_SUSPICIOUS))
+            mark = float(os.environ.get("TRENTINA_GIT_SUSPICIOUS", DEFAULT_GIT_SUSPICIOUS))
         except ValueError:
-            logger.warning("config: TRENTINA_GIT_SUSPICIOUS is not a number — using the default")
+            mark = math.nan
+        if not 0.0 <= mark <= 1.0:
+            logger.warning(
+                "config: TRENTINA_GIT_SUSPICIOUS is not a score from 0 to 1 — using the default"
+            )
             return DEFAULT_GIT_SUSPICIOUS
+        return mark
 
     @property
     def git_judges(self) -> int:

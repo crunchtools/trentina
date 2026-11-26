@@ -366,17 +366,19 @@ class GitJudge:
             return
         if (state := self._begin(obj)) is None:
             return
-        async with self._lane, _read_share(self.profile.name):
-            try:
+        try:
+            async with self._lane, _read_share(self.profile.name):
                 read = await asyncio.get_running_loop().run_in_executor(
                     _POOL, self._read_object, obj
                 )
-            except asyncio.CancelledError:
-                state.gap = "deadline"  # the thread finishes alone; its result is dropped
-                raise
-            except Exception as exc:
-                self._failed(state, exc)
-                return
+        except asyncio.CancelledError:
+            # Waiting for a thread or reading on one: either way unjudged. A
+            # thread already reading finishes alone and its result is dropped.
+            state.gap = "deadline"
+            raise
+        except Exception as exc:
+            self._failed(state, exc)
+            return
         for count, unit in enumerate(self._take(obj, state, read), 1):
             self._add(unit, obj.oid, state)
             if count % ADD_YIELD == 0:

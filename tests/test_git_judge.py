@@ -559,9 +559,10 @@ def test_the_suspicious_mark_reads_its_setting(
 
     monkeypatch.setenv("TRENTINA_GIT_SUSPICIOUS", "0.35")
     assert Config().git_suspicious == 0.35
-    monkeypatch.setenv("TRENTINA_GIT_SUSPICIOUS", "lots")
-    assert Config().git_suspicious == DEFAULT_GIT_SUSPICIOUS
-    assert "TRENTINA_GIT_SUSPICIOUS is not a number" in caplog.text
+    for value in ("lots", "nan", "inf", "-0.1", "1.5"):
+        monkeypatch.setenv("TRENTINA_GIT_SUSPICIOUS", value)
+        assert Config().git_suspicious == DEFAULT_GIT_SUSPICIOUS, value
+    assert "TRENTINA_GIT_SUSPICIOUS is not a score from 0 to 1 — using the default" in caplog.text
 
 
 async def test_nothing_spends_l3_past_the_deadline(
@@ -745,6 +746,22 @@ async def test_one_large_object_is_read_at_a_time_per_fetch(
     judge = _fresh()
     await asyncio.gather(*(judge.add(_blob(f"{n} line\n" * 1000)) for n in range(4)))
     assert peak == 1
+
+
+async def test_a_large_object_cancelled_waiting_for_its_thread_is_a_deadline_gap() -> None:
+    judge = _fresh()
+    blob = _blob("a short line\n" * 1000)
+    share = git_judge._read_share(judge.profile.name)
+    await share.acquire()
+    try:
+        adding = asyncio.ensure_future(judge.add(blob))
+        await asyncio.sleep(0.05)
+        adding.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await adding
+    finally:
+        share.release()
+    assert judge.outcome().unjudged == [("blob", blob.oid, "deadline")]
 
 
 async def test_a_large_object_cancelled_mid_read_is_a_deadline_gap_and_its_late_result_is_dropped(
