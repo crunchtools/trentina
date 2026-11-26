@@ -748,6 +748,17 @@ class Config:
             int_env("TRENTINA_VERDICT_TTL_HOURS", DEFAULT_VERDICT_TTL_HOURS, minimum=1),
         )
 
+    @functools.cached_property
+    def git_verdict_ttl_hours(self) -> int | None:
+        """``TRENTINA_VERDICT_TTL_HOURS`` as git verdicts read it (spec 027).
+
+        None when unset: a git verdict keeps its own thirty days
+        (``git_judge.VERDICT_TTL``), since a cold clone converges over many
+        fetches. Set, it caps git verdicts as it does every other."""
+        if not os.environ.get("TRENTINA_VERDICT_TTL_HOURS", "").strip():
+            return None
+        return self.verdict_ttl_hours
+
     @property
     def git_suspicious(self) -> float:
         """``TRENTINA_GIT_SUSPICIOUS``: the L2 score over which a git unit goes to L3 alone.

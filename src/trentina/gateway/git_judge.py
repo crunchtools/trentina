@@ -39,7 +39,9 @@ import asyncio
 import contextlib
 import hashlib
 import logging
+import sys
 import time
+import weakref
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -95,7 +97,9 @@ MAX_OBJECT_BYTES = 64 * 1024 * 1024
 unjudged (``too_large``) and its bytes never leave the child."""
 
 MAX_TIP_BYTES = 64 * 1024 * 1024
-"""Small text blobs kept until the pack ends, to judge the tip's whole."""
+"""Small text blobs kept until the pack ends, to judge the tip's whole. A
+tip file that did not fit is named unjudged (``backlog``) when the pack ends:
+which blobs are the tip is known only then."""
 
 MAX_TRACKED_OBJECTS = 1_000_000
 """Objects one fetch may have the judge track, as many as the reader accepts in
@@ -103,7 +107,8 @@ a pack. Past it the fetch stops being judged and its pack is named unjudged
 (``too_many``): ``_objects`` holds one state for each, so it is the bound."""
 
 MAX_TREE_BYTES = 64 * 1024 * 1024
-"""Tree content kept until the pack ends, to find the tip. A tree past it is
+"""Parsed tree entries kept until the pack ends, to find the tip, counted as
+the memory they take (``_held``), not the tree objects' bytes. A tree past it is
 unjudged (``backlog``) and the tip walk stops at it; its blobs are still judged
 as they arrive, only not again whole."""
 
@@ -114,13 +119,18 @@ L3_CALLS = 4
 """L3 calls in flight for one fetch."""
 
 VERDICT_TTL = 30 * 24 * 3600.0
-"""Seconds a git verdict is kept, from its judgement. A chunk's key is its
-content and the stamp names the judge, so a verdict holds until the stamp
-changes; the cap bounds what a judge later found wanting still serves."""
+"""Seconds a git verdict is kept, from its judgement, unless
+``TRENTINA_VERDICT_TTL_HOURS`` asks for less (``verdict_ttl``). A chunk's key
+is its content and the stamp names the judge, so a verdict holds until the
+stamp changes; the cap bounds what a judge later found wanting still serves."""
 
 READ_THREADS = 2
 """Worker threads reading objects (chunking, tree entries, rendering) for all
 fetches in the gateway at once; the event loop never does that work."""
+
+PROFILE_READ_THREADS = 1
+"""Of ``READ_THREADS``, the most one profile's fetches read on at once, so a
+profile running two judged fetches leaves the other thread to the rest."""
 
 INLINE_BYTES = 4096
 """An object this small is read on the loop: a hop to a thread would cost
@@ -152,6 +162,33 @@ CLEAN: dict[str, Any] | None = None
 
 _POOL = ThreadPoolExecutor(READ_THREADS, thread_name_prefix="git-read")
 
+#: Per event loop, as the lanes are: a semaphore belongs to the loop it was first used on.
+_read_shares: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[str, asyncio.Semaphore]] = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _read_share(profile: str) -> asyncio.Semaphore:
+    """The profile's share of ``_POOL``: ``PROFILE_READ_THREADS`` reads in flight."""
+    shares = _read_shares.setdefault(asyncio.get_running_loop(), {})
+    share = shares.get(profile)
+    if share is None:
+        share = shares[profile] = asyncio.Semaphore(PROFILE_READ_THREADS)
+    return share
+
+
+def verdict_ttl() -> float:
+    """Seconds a git verdict is served: ``VERDICT_TTL``, or less when the
+    operator set ``TRENTINA_VERDICT_TTL_HOURS``."""
+    hours = get_config().git_verdict_ttl_hours
+    return VERDICT_TTL if hours is None else min(VERDICT_TTL, hours * 3600.0)
+
+
+def _held(value: str | bytes | None) -> int:
+    """The memory a held string takes, header included: a non-ASCII ``str``
+    is up to four bytes a character, and a small one mostly header."""
+    return 0 if value is None else sys.getsizeof(value)
+
 
 @dataclass
 class Unit:
@@ -179,7 +216,8 @@ class Unit:
 
     @property
     def size(self) -> int:
-        return len(self.text) + len(self.lead_in) + len(self.binary or b"")
+        """The memory its text and bytes take, what ``MAX_BACKLOG_BYTES`` bounds."""
+        return _held(self.text) + _held(self.lead_in) + _held(self.binary)
 
 
 @dataclass
@@ -192,6 +230,8 @@ class ObjectState:
     flagged: tuple[str, str] | None = None  # (layer, risk)
     gap: str | None = None
     recorded: bool = False
+    #: A small text blob ``MAX_TIP_BYTES`` had no room for: a gap if it is the tip.
+    unheld: bool = False
 
     @property
     def settled(self) -> bool:
@@ -205,6 +245,7 @@ class _Read:
     units: list[Unit]
     encoding: str | None = None
     tree: list[tuple[str, str, str]] | None = None
+    tree_held: int = 0  # the memory ``tree`` takes, measured where it was parsed
     commit_tree: str | None = None
     tag_target: str | None = None
     small: bool = False  # a text blob small enough to keep for the tip's whole
@@ -325,7 +366,7 @@ class GitJudge:
             return
         if (state := self._begin(obj)) is None:
             return
-        async with self._lane:
+        async with self._lane, _read_share(self.profile.name):
             try:
                 read = await asyncio.get_running_loop().run_in_executor(
                     _POOL, self._read_object, obj
@@ -360,14 +401,17 @@ class GitJudge:
         if read.tag_target is not None:
             self._tag_targets[obj.oid] = read.tag_target
         if read.tree is not None:
-            if self._tree_bytes + len(obj.content) > MAX_TREE_BYTES:
+            if self._tree_bytes + read.tree_held > MAX_TREE_BYTES:
                 state.gap = "backlog"
                 return []
-            self._tree_bytes += len(obj.content)
+            self._tree_bytes += read.tree_held
             self._trees[obj.oid] = read.tree
-        if read.small and self._small_bytes + len(obj.content) <= MAX_TIP_BYTES:
-            self._small_text[obj.oid] = obj.content
-            self._small_bytes += len(obj.content)
+        if read.small:
+            if self._small_bytes + (held := _held(obj.content)) <= MAX_TIP_BYTES:
+                self._small_text[obj.oid] = obj.content
+                self._small_bytes += held
+            else:
+                state.unheld = True
         if read.encoding is not None:
             # A message in an encoding the layers read one way and a tool
             # another (UTF-7, UTF-16) is flagged as that, deterministically.
@@ -408,6 +452,8 @@ class GitJudge:
         for oid in tips:
             held = self._small_text.get(oid)
             if held is None:
+                if (skipped := self._objects.get(oid)) is not None and skipped.unheld:
+                    skipped.gap = skipped.gap or "backlog"
                 continue
             text = held.decode("utf-8", "replace")
             if estimate_tokens(text) > whole:
@@ -494,7 +540,10 @@ class GitJudge:
         if obj.kind == OBJ_TREE:
             entries = tree_entries(obj.content, oid_len=self._oid_len)
             names = [self._unit(name, "", "git_tree") for _m, name, _o in entries]
-            return _Read(names, tree=entries)
+            held = sys.getsizeof(entries) + sum(
+                sys.getsizeof(entry) + sum(map(sys.getsizeof, entry)) for entry in entries
+            )
+            return _Read(names, tree=entries, tree_held=held)
         if is_binary(obj.content):
             # Read as anywhere else (images, PDFs, archives, office files) or
             # for its strings; keyed by its bytes, since that is what was read.
@@ -642,7 +691,7 @@ class GitJudge:
         from ..perimeter_db import get_git_verdicts, perimeter_stamp
 
         try:
-            known = get_git_verdicts([unit.key for unit in batch], perimeter_stamp(), VERDICT_TTL)
+            known = get_git_verdicts([unit.key for unit in batch], perimeter_stamp(), verdict_ttl())
         except Exception as exc:
             logger.warning(
                 "git judge: verdict store unread: %s at %s", exc_kind(exc), exc_where(exc)
@@ -967,12 +1016,12 @@ def _memory_get(key: str) -> Any:
     """A verdict this process reached, or ``_MISS``.
 
     It expires as the store's do (#817): counted from the judgement, not the
-    last hit, and dropped once past ``VERDICT_TTL``.
+    last hit, and dropped once past ``verdict_ttl()``.
     """
     entry = _memory.get(key)
     if entry is None:
         return _MISS
-    if not 0 <= time.time() - entry[0] < VERDICT_TTL:
+    if not 0 <= time.time() - entry[0] < verdict_ttl():
         del _memory[key]
         return _MISS
     _memory.move_to_end(key)

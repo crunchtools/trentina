@@ -25,7 +25,7 @@ profile:
 | Tool | As the operator |
 |---|---|
 | `quarantine_stats` | Every profile's calls, detections, destinations and fan-out, compression savings, and every federation link in both directions (`federation`) |
-| `cache_flush` | Every cache, by exact name |
+| `cache_flush` | Every cache, by exact name; `git_verdicts=true` flushes the stored git verdicts instead |
 | `reconnect_backend` | Any backend, wherever it is configured, and which profiles share it |
 | `reload_profiles` | Applies the whole `profiles.yaml`, gateway-wide settings included |
 | `config_tool` | Reads and edits `profiles.yaml` itself, then applies it |

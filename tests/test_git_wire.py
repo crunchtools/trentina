@@ -22,6 +22,7 @@ from trentina.gateway.git_wire import (
     PushResponse,
     RefFilter,
     check_upload_request,
+    is_cold_fetch,
     is_promisor_fetch,
     negotiated_sideband,
     parse_command,
@@ -576,6 +577,16 @@ class TestRequestReading:
         v0 = pkt(b"want " + ONE + b" side-band-64k filter\n") + pkt(b"filter blob:none\n")
         assert is_promisor_fetch(v0 + b"0000", None)
         assert not is_promisor_fetch(pkt(b"want " + ONE + EOL) + b"0000", None)
+
+    def test_a_cold_fetch_has_wants_and_no_haves(self) -> None:
+        assert is_cold_fetch(_fetch_v2(b"want " + ONE, b"done"), V2)
+        assert is_cold_fetch(_fetch_v2(b"want " + ONE, b"deepen 1", b"done"), V2), "shallow too"
+        assert not is_cold_fetch(_fetch_v2(b"want " + ONE, b"have " + TWO, b"done"), V2)
+        assert not is_cold_fetch(_fetch_v2(b"done"), V2), "nothing wanted"
+        assert is_cold_fetch(pkt(b"want " + ONE + b" side-band-64k\n") + b"0000", None)
+        assert not is_cold_fetch(
+            pkt(b"want " + ONE + b" side-band-64k\n") + b"0000" + pkt(b"have " + TWO + EOL), None
+        )
 
 
 class TestRewriteListing:

@@ -89,6 +89,7 @@ from .git_wire import (
     RefFilter,
     RepoPath,
     check_upload_request,
+    is_cold_fetch,
     is_promisor_fetch,
     negotiated_sideband,
     parse_command,
@@ -379,6 +380,7 @@ class Negotiation:
     lists_refs: bool
     wants: list[str]
     promisor: bool
+    cold: bool = False
 
     @property
     def object_format(self) -> str:
@@ -433,7 +435,8 @@ def _admit_negotiation(arrived: bytes, admitted: GitAdmitted) -> Negotiation:
     if wanted and not negotiated_sideband(body, admitted.protocol):
         raise GitRefusedError(HTTPStatus.BAD_REQUEST, "sideband")
     promisor = bool(wanted) and is_promisor_fetch(body, admitted.protocol)
-    return Negotiation(body, lists_refs, wanted, promisor)
+    cold = not promisor and bool(wanted) and is_cold_fetch(body, admitted.protocol)
+    return Negotiation(body, lists_refs, wanted, promisor, cold)
 
 
 async def _negotiation(stream: AsyncIterator[bytes], admitted: GitAdmitted) -> Negotiation:
@@ -577,6 +580,7 @@ async def _relayed(
             v2=admitted.protocol == PROTOCOL_V2,
             wants=negotiation.wants,
             object_format=negotiation.object_format,
+            cold=negotiation.cold,
         )
         relayed = relay_fetch(ctx, resp, fetch)
     async for piece in relayed:

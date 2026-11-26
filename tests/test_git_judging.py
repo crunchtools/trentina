@@ -600,6 +600,7 @@ async def _slots_free(timeout: float = 10.0) -> bool:
 async def no_slot_leaks() -> Any:
     """Every test starts with no judging slot held, and ends having let each go."""
     git_fetch._slots.total = 0
+    git_fetch._slots.cold = 0
     git_fetch._slots.by_profile.clear()
     yield
     assert await _slots_free(), "a judging slot was never given back"
@@ -707,6 +708,48 @@ class TestJudgingSlots:
         assert git_fetch._slots.total == 0
         assert not git_fetch._slots.by_profile
 
+    def test_cold_clones_leave_half_the_slots_to_other_fetches(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_GIT_JUDGES", "4")
+        monkeypatch.setenv("TRENTINA_GIT_PROFILE_JUDGES", "2")
+        slots = git_fetch._slots
+        assert slots.take("a", cold=True)
+        assert slots.take("b", cold=True)
+        assert not slots.take("c", cold=True), "two cold clones hold all they may"
+        assert slots.take("c") and slots.take("d"), "a fetch with haves still finds one"
+        assert not slots.take("e"), "the gateway's cap"
+        slots.release("a", cold=True)
+        assert slots.cold == 1
+        assert slots.take("e", cold=True)
+        for profile, cold in (("b", True), ("c", False), ("d", False), ("e", True)):
+            slots.release(profile, cold=cold)
+        assert slots.total == slots.cold == 0
+
+    def test_a_single_slot_still_judges_a_clone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TRENTINA_GIT_JUDGES", "1")
+        assert git_fetch._Slots.cold_limit() == 1
+        monkeypatch.setenv("TRENTINA_GIT_JUDGES", "0")
+        assert git_fetch._Slots.cold_limit() == 0
+
+    async def test_a_clone_is_counted_cold_and_gives_its_cold_slot_back(
+        self, judged: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        taken: list[bool] = []
+        real = git_fetch._slots.take
+
+        def spy(profile: str, *, cold: bool = False) -> bool:
+            taken.append(cold)
+            return real(profile, cold=cold)
+
+        monkeypatch.setattr(git_fetch._slots, "take", spy)
+        judged.repo.plant({"notes.txt": b"some notes\n"})
+        code, output = await judged.repo.clone(judged, "2")
+        assert code == 0, output
+        assert taken == [True]
+        assert await _slots_free()
+        assert git_fetch._slots.cold == 0
+
     def test_another_profile_still_gets_a_slot_when_one_is_at_its_cap(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -748,11 +791,15 @@ class TestJudgeBounds:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         judge = _bare_judge()
-        monkeypatch.setattr(git_judge, "MAX_TREE_BYTES", 40)
         content = b"100644 a\x00" + b"\x01" * 20
+        held = judge._read_object(
+            PackObject(oid="0" * 40, kind="tree", content=content, offset=0)
+        ).tree_held
+        assert held > 4 * len(content), "parsed entries take more than the tree's bytes"
+        monkeypatch.setattr(git_judge, "MAX_TREE_BYTES", held)
         judge.submit(PackObject(oid="1" * 40, kind="tree", content=content, offset=0))
         judge.submit(PackObject(oid="2" * 40, kind="tree", content=content, offset=0))
-        assert judge._tree_bytes == len(content)
+        assert judge._tree_bytes == held
         assert [(o, g) for _k, o, g in judge.outcome().unjudged] == [("2" * 40, "backlog")]
 
     def test_the_judge_says_when_it_tracks_as_many_objects_as_it_may(

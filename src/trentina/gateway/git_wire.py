@@ -605,6 +605,21 @@ def is_promisor_fetch(body: bytes, protocol: str | None) -> bool:
     return filtered and bool(wanted)
 
 
+def is_cold_fetch(body: bytes, protocol: str | None) -> bool:
+    """True for a fetch with nothing to negotiate from: wants and no ``have``.
+
+    A clone, shallow or not, and a fetch into an empty repository. A partial
+    clone's lazy fetch has no ``have`` either; the caller tells it apart with
+    ``is_promisor_fetch``. git's stateless v2 negotiation sends every ``have``
+    again in the round that asks for the pack, so that round's body decides.
+    """
+    wanted, _capabilities = _want_fields(body, protocol)
+    for packet in pkt_lines(body):
+        if not isinstance(packet, int) and _text(packet).partition(b" ")[0] == b"have":
+            return False
+    return bool(wanted)
+
+
 def negotiated_sideband(body: bytes, protocol: str | None) -> bool:
     """Whether the response carries its pack in side-band.
 

@@ -169,24 +169,42 @@ class _Slots:
     ``DEFAULT_LIMITS.max_inflated`` (2 GiB) each, the spool on the perimeter
     volume is bounded by their product, and the children's memory by the
     slots times the reader's address-space limit.
+
+    A cold fetch (``Fetch.cold``: no ``have``, so the whole history) takes at
+    most ``cold_limit`` of them. A cold clone cannot finish judging inside
+    ``judge_deadline`` and holds its slot for all of it, so without the
+    bound two profiles cloning would leave every fetch after them, the
+    cheap ones that do finish, unjudged as ``busy``.
     """
 
     def __init__(self) -> None:
         self.total = 0
+        self.cold = 0
         self.by_profile: dict[str, int] = {}
 
-    def take(self, profile: str) -> bool:
+    @staticmethod
+    def cold_limit() -> int:
+        """Half the gateway's slots, and one where there is only one."""
+        judges = get_config().git_judges
+        return min(judges, max(1, judges // 2))
+
+    def take(self, profile: str, *, cold: bool = False) -> bool:
         config = get_config()
         if self.total >= config.git_judges:
             return False
         if self.by_profile.get(profile, 0) >= config.git_profile_judges:
             return False
+        if cold and self.cold >= self.cold_limit():
+            return False
         self.total += 1
+        self.cold += cold
         self.by_profile[profile] = self.by_profile.get(profile, 0) + 1
         return True
 
-    def release(self, profile: str) -> None:
+    def release(self, profile: str, *, cold: bool = False) -> None:
         self.total = max(self.total - 1, 0)
+        if cold:
+            self.cold = max(self.cold - 1, 0)
         left = self.by_profile.get(profile, 0) - 1
         if left > 0:
             self.by_profile[profile] = left
@@ -197,7 +215,14 @@ class _Slots:
 _slots = _Slots()
 
 
-async def _hold(profile: str, judge: asyncio.Task[None], feeder: _Feeder, deadline: float) -> None:
+async def _hold(
+    profile: str,
+    judge: asyncio.Task[None],
+    feeder: _Feeder,
+    deadline: float,
+    *,
+    cold: bool = False,
+) -> None:
     """Keep the profile's judging slot until the reader has ended and the judge
     task has settled, however the response ended; at the latest ``SLOT_GRACE``
     past the deadline, which bounds both."""
@@ -208,7 +233,7 @@ async def _hold(profile: str, judge: asyncio.Task[None], feeder: _Feeder, deadli
     except TimeoutError:
         logger.warning("git judge: a judging slot was released at its backstop")
     finally:
-        _slots.release(profile)
+        _slots.release(profile, cold=cold)
 
 
 # --- the chunk key -------------------------------------------------------------
@@ -255,6 +280,8 @@ class Fetch:
     v2: bool
     wants: list[str]
     object_format: str = "sha1"
+    #: No ``have``: the whole history, a clone (``git_wire.is_cold_fetch``).
+    cold: bool = False
 
 
 def new_call_ref() -> str:
@@ -505,7 +532,7 @@ class _FetchRelay:
         """The judging of this fetch, or None when no slot is free: the pack
         then goes on unjudged, named ``busy``."""
         op, fetch = self.ctx.op, self.fetch
-        if self.busy or not _slots.take(fetch.profile.name):
+        if self.busy or not _slots.take(fetch.profile.name, cold=fetch.cold):
             self.busy = True
             return None
         task: asyncio.Task[None] | None = None
@@ -532,7 +559,13 @@ class _FetchRelay:
             task = self.judge.start(float(fetch.grant.judge_deadline))
             self.feeder = _Feeder(reading, self.judge)
             hold = asyncio.ensure_future(
-                _hold(fetch.profile.name, task, self.feeder, float(fetch.grant.judge_deadline))
+                _hold(
+                    fetch.profile.name,
+                    task,
+                    self.feeder,
+                    float(fetch.grant.judge_deadline),
+                    cold=fetch.cold,
+                )
             )
             _CLOSING.add(hold)
             hold.add_done_callback(_CLOSING.discard)
@@ -540,7 +573,7 @@ class _FetchRelay:
             # _hold gives the slot back once it runs; before that, this does.
             if task is not None:
                 task.cancel()
-            _slots.release(fetch.profile.name)
+            _slots.release(fetch.profile.name, cold=fetch.cold)
             raise
         return self.feeder
 
