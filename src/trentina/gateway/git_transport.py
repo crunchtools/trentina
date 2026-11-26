@@ -50,7 +50,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import zlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any
 
@@ -71,7 +71,7 @@ from ..transports.base import (
 )
 from ..transports.perimeter import InTree
 from .destination import MAX_DESTINATION_CHARS
-from .git_fetch import Fetch, enter_lane, relay_fetch, relay_listing, relay_push
+from .git_fetch import Fetch, at_tips, enter_lane, relay_fetch, relay_listing, relay_push
 from .git_wire import (
     FLUSH,
     INFO_REFS,
@@ -89,6 +89,7 @@ from .git_wire import (
     RefFilter,
     RepoPath,
     check_upload_request,
+    is_cold_fetch,
     is_promisor_fetch,
     negotiated_sideband,
     parse_command,
@@ -289,6 +290,11 @@ class GitRoute(Route[GitAdmitted, InTree]):
         if negotiation is not None and negotiation.wants:
             # A judged fetch waits for its lane before the forge is asked, and
             # gives it back when the operation finishes, however it ends.
+            if negotiation.promisor and at_tips(
+                ctx.profile.name, admitted.path.slug, negotiation.wants
+            ):
+                # A filtered clone, not a lazy fetch: what it wants is a ref tip.
+                negotiation = replace(negotiation, promisor=False, cold=True)
             lane = await enter_lane(ctx.profile.name, negotiation.promisor)
             op.upstream.callback(lane.release)
         return await self._answer(admitted, ctx, headers, content, negotiation)
@@ -379,6 +385,7 @@ class Negotiation:
     lists_refs: bool
     wants: list[str]
     promisor: bool
+    cold: bool = False
 
     @property
     def object_format(self) -> str:
@@ -433,7 +440,8 @@ def _admit_negotiation(arrived: bytes, admitted: GitAdmitted) -> Negotiation:
     if wanted and not negotiated_sideband(body, admitted.protocol):
         raise GitRefusedError(HTTPStatus.BAD_REQUEST, "sideband")
     promisor = bool(wanted) and is_promisor_fetch(body, admitted.protocol)
-    return Negotiation(body, lists_refs, wanted, promisor)
+    cold = not promisor and bool(wanted) and is_cold_fetch(body, admitted.protocol)
+    return Negotiation(body, lists_refs, wanted, promisor, cold)
 
 
 async def _negotiation(stream: AsyncIterator[bytes], admitted: GitAdmitted) -> Negotiation:
@@ -577,6 +585,7 @@ async def _relayed(
             v2=admitted.protocol == PROTOCOL_V2,
             wants=negotiation.wants,
             object_format=negotiation.object_format,
+            cold=negotiation.cold,
         )
         relayed = relay_fetch(ctx, resp, fetch)
     async for piece in relayed:

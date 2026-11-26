@@ -292,6 +292,43 @@ async def test_a_verdict_in_memory_holds_until_the_cap(
     assert len(layers.screened) == 3, "past the cap it is judged again"
 
 
+def test_the_ttl_setting_caps_git_verdicts_and_unset_leaves_thirty_days(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from trentina import config
+
+    monkeypatch.delenv("TRENTINA_VERDICT_TTL_HOURS", raising=False)
+    monkeypatch.setattr(config, "_config", None)
+    assert git_judge.verdict_ttl() == git_judge.VERDICT_TTL
+    monkeypatch.setenv("TRENTINA_VERDICT_TTL_HOURS", "6")
+    monkeypatch.setattr(config, "_config", None)
+    assert git_judge.verdict_ttl() == 6 * 3600.0
+    monkeypatch.setenv("TRENTINA_VERDICT_TTL_HOURS", "100000")
+    monkeypatch.setattr(config, "_config", None)
+    assert git_judge.verdict_ttl() == git_judge.VERDICT_TTL, "clamped to the cap"
+
+
+async def test_a_set_ttl_expires_git_verdicts_in_memory_and_in_the_store(
+    layers: Layers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from trentina import config, perimeter_db
+
+    monkeypatch.setenv("TRENTINA_VERDICT_TTL_HOURS", "2")
+    monkeypatch.setattr(config, "_config", None)
+    perimeter_db.delete_git_verdicts()
+    blob = _blob("a file judged under a short ttl\n")
+    await _judged(blob)
+    now = git_judge.time.time()
+    monkeypatch.setattr(git_judge.time, "time", lambda: now + 3600)
+    await _judged(blob)
+    assert len(layers.screened) == 1, "an hour old, from memory"
+    git_judge.reset_git_verdicts()
+    monkeypatch.setattr(perimeter_db.time, "time", lambda: now + 3 * 3600)
+    monkeypatch.setattr(git_judge.time, "time", lambda: now + 3 * 3600)
+    await _judged(blob)
+    assert len(layers.screened) == 2, "past the setting, the store's copy is stale too"
+
+
 # --- the tip's files, judged whole ---------------------------------------------------
 
 
@@ -363,6 +400,60 @@ async def test_tip_files_are_judged_whole_and_older_versions_are_not(wholes: Who
     assert sorted(wholes.whole) == sorted([readme.content.decode(), notes.content.decode()])
     assert not any(older.content.decode() in text for text in wholes.whole)
     assert judge.outcome().flagged == [] and judge.outcome().pending == 0
+
+
+async def test_a_tip_file_the_tip_budget_had_no_room_for_is_named_unjudged(
+    wholes: Wholes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old, tip = _blob("an older file from history\n"), _blob("the file at the tip\n")
+    monkeypatch.setattr(git_judge, "MAX_TIP_BYTES", git_judge._held(old.content))
+    tree = _tree(("100644", "file", tip))
+    commit = _commit(tree)
+    judge = await _fetched([commit.oid], commit, tree, old, tip)
+    assert wholes.whole == []
+    assert judge.outcome().unjudged == [("blob", tip.oid, "backlog")]
+
+
+async def test_the_backlog_counts_a_units_memory_not_its_characters() -> None:
+    ascii_unit = git_judge.Unit(key="a", text="x" * 100, lead_in="", source_type="git_blob")
+    wide_unit = git_judge.Unit(key="b", text="\U0001f600" * 100, lead_in="", source_type="git_blob")
+    assert ascii_unit.size >= 100
+    assert wide_unit.size >= 400, "four bytes a character, as Python holds it"
+
+
+async def test_one_profile_reads_on_one_thread_and_leaves_the_other(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    running: dict[str, int] = {}
+    peak: dict[str, int] = {}
+    both = 0
+    real = git_judge.chunk_blob
+    lock = threading.Lock()
+
+    def counting(content: bytes, secret: bytes) -> Any:
+        nonlocal both
+        who = content.split(b" ", 1)[0].decode()
+        with lock:
+            running[who] = running.get(who, 0) + 1
+            peak[who] = max(peak.get(who, 0), running[who])
+            both = max(both, sum(running.values()))
+        time.sleep(0.05)
+        with lock:
+            running[who] -= 1
+        return real(content, secret)
+
+    monkeypatch.setattr(git_judge, "chunk_blob", counting)
+    first, second, other = _fresh(), _fresh(), _fresh()
+    other.profile = other.profile.model_copy(update={"name": "another"})
+    await asyncio.gather(
+        *(
+            judge.add(_blob(f"{who} {n} line\n" * 1000))
+            for n in range(3)
+            for judge, who in ((first, "mine"), (second, "mine"), (other, "theirs"))
+        )
+    )
+    assert peak["mine"] == 1, "two fetches of one profile share one thread"
+    assert both == 2, "another profile's fetch read beside them"
 
 
 async def test_a_tip_file_over_the_whole_limit_is_not_judged_whole(
@@ -489,9 +580,10 @@ def test_the_suspicious_mark_reads_its_setting(
 
     monkeypatch.setenv("TRENTINA_GIT_SUSPICIOUS", "0.35")
     assert Config().git_suspicious == 0.35
-    monkeypatch.setenv("TRENTINA_GIT_SUSPICIOUS", "lots")
-    assert Config().git_suspicious == DEFAULT_GIT_SUSPICIOUS
-    assert "TRENTINA_GIT_SUSPICIOUS is not a number" in caplog.text
+    for value in ("lots", "nan", "inf", "-0.1", "1.5"):
+        monkeypatch.setenv("TRENTINA_GIT_SUSPICIOUS", value)
+        assert Config().git_suspicious == DEFAULT_GIT_SUSPICIOUS, value
+    assert "TRENTINA_GIT_SUSPICIOUS is not a score from 0 to 1 — using the default" in caplog.text
 
 
 async def test_nothing_spends_l3_past_the_deadline(
@@ -675,6 +767,62 @@ async def test_one_large_object_is_read_at_a_time_per_fetch(
     judge = _fresh()
     await asyncio.gather(*(judge.add(_blob(f"{n} line\n" * 1000)) for n in range(4)))
     assert peak == 1
+
+
+async def test_a_large_object_cancelled_waiting_for_its_thread_is_a_deadline_gap() -> None:
+    judge = _fresh()
+    blob = _blob("a short line\n" * 1000)
+    share = git_judge._read_share(judge.profile.name)
+    await share.acquire()
+    try:
+        adding = asyncio.ensure_future(judge.add(blob))
+        await asyncio.sleep(0.05)
+        adding.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await adding
+    finally:
+        share.release()
+    assert judge.outcome().unjudged == [("blob", blob.oid, "deadline")]
+
+
+async def test_a_cancelled_read_keeps_its_profiles_share_until_its_thread_is_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started, release = threading.Event(), threading.Event()
+    real = git_judge.chunk_blob
+
+    def blocked(content: bytes, secret: bytes) -> Any:
+        started.set()
+        release.wait(10)
+        return real(content, secret)
+
+    monkeypatch.setattr(git_judge, "chunk_blob", blocked)
+    judge = _fresh()
+    share = git_judge._read_share(judge.profile.name)
+    adding = asyncio.ensure_future(judge.add(_blob("a short line\n" * 1000)))
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    adding.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await adding
+    assert share.locked(), "the thread is still reading"
+    release.set()
+    for _ in range(500):
+        if not share.locked():
+            break
+        await asyncio.sleep(0.01)
+    assert not share.locked(), "given back once the thread finished"
+
+
+def test_a_unit_past_the_backlog_is_unjudged_and_not_queued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    judge = _fresh()
+    blob = _blob("an ordinary file that does not fit\n")
+    monkeypatch.setattr(git_judge, "MAX_BACKLOG_BYTES", 10)
+    judge.submit(blob)
+    assert judge.outcome().unjudged == [("blob", blob.oid, "backlog")]
+    assert judge.stats["units"] == 0 and judge._queue.empty()
 
 
 async def test_a_large_object_cancelled_mid_read_is_a_deadline_gap_and_its_late_result_is_dropped(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from http import HTTPStatus
 
 import pytest
@@ -73,3 +74,26 @@ async def test_a_cancelled_waiter_leaks_nothing() -> None:
     assert not lane.gate.locked(), "no permit was leaked"
     again = await asyncio.wait_for(enter_lane("p", False), 1)
     again.release()
+
+
+def test_a_pack_header_declares_its_object_count() -> None:
+    assert git_fetch._declared_objects(b"PACK\0\0\0\x02\0\0\x10\x00") == 4096
+    assert git_fetch._declared_objects(b"PACK\0\0\0\x02") == 0, "short"
+    assert git_fetch._declared_objects(b"NOPE\0\0\0\x02\0\0\x10\x00") == 0
+
+
+def test_the_remembered_tips_are_bounded_and_replaced_by_the_next_listing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(git_fetch, "_tips", OrderedDict())
+    monkeypatch.setattr(git_fetch, "_tips_held", 0)
+    monkeypatch.setattr(git_fetch, "MAX_TIPS", 3)
+    git_fetch.remember_tips("p", "a/x", ["1", "2"])
+    assert git_fetch.at_tips("p", "a/x", ["9", "2"])
+    assert not git_fetch.at_tips("q", "a/x", ["2"]), "another profile's listing"
+    git_fetch.remember_tips("p", "a/y", ["3", "4"])
+    assert not git_fetch.at_tips("p", "a/x", ["1"]), "the oldest repository went"
+    assert git_fetch._tips_held == 2
+    git_fetch.remember_tips("p", "a/y", ["5"])
+    assert git_fetch.at_tips("p", "a/y", ["5"]) and not git_fetch.at_tips("p", "a/y", ["3"])
+    assert git_fetch._tips_held == 1

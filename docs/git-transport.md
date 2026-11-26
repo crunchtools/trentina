@@ -236,13 +236,23 @@ it is one line with the counts. A gap is one of `l2_unavailable`,
 its bytes stay in the reader child. Pending objects go on being judged after the
 fetch, at background priority, for up to the grant's `judge_deadline`; their
 verdicts land as `detections` rows and warm the cache, so the next fetch is
-quick. A flagged name in a ref listing is listed, recorded, and counted on
-the side band of that repository's next fetch.
+quick. A verdict is kept 30 days, or `TRENTINA_VERDICT_TTL_HOURS` when that is
+set, and an operator flushes them all with `cache_flush(git_verdicts=true)`.
+A tip file that the 64 MiB kept for judging the tip whole had no room for is
+named unjudged (`backlog`). A flagged name in a ref listing is listed,
+recorded, and counted on the side band of that repository's next fetch.
 
 A profile's judged fetches run one at a time in two lanes, `fetch` and
 `promisor` (a partial clone's lazy fetches), so a checkout never waits
 behind a clone. A fetch that finds its lane busy waits, up to four of them,
-and past that is refused `busy`.
+and past that is refused `busy`. Large objects are read on two threads
+shared by the gateway, one of them at most for any one profile. A clone
+takes at most half of `TRENTINA_GIT_JUDGES`' slots, so the fetches that can
+finish judging still find one. A fetch counts as a clone when its request has
+no `have`, when it is filtered and wants a ref tip the repository's last
+listing showed (a partial clone's lazy blob fetch wants no tip), or when the
+forge's pack declares more than 1,000 objects, whatever `have` lines the
+request carried.
 
 **Clones made before phase 1 hold history no layer read.** A fetch brings
 only what is new, and judging does not reach back into a checkout: re-clone

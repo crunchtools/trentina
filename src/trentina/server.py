@@ -334,6 +334,7 @@ async def quarantine_stats_tool() -> dict[str, Any]:
 @mcp.tool()
 async def cache_flush_tool(
     backend: str | None = None,
+    git_verdicts: bool = False,
 ) -> dict[str, Any]:
     """Flush gateway tool list caches.
 
@@ -346,8 +347,10 @@ async def cache_flush_tool(
             there, and the result is the same either way. An operator flushes
             that backend everywhere it is configured. Omit for everything in
             scope.
+        git_verdicts: Operator only. Flush every stored git verdict instead
+            of the tool list caches; takes no backend.
     """
-    return await cache_flush(backend)
+    return await cache_flush(backend, git_verdicts=git_verdicts)
 
 
 @mcp.tool()
