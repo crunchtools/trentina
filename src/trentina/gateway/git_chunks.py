@@ -6,7 +6,7 @@ text blob is judged as chunks of about 2 KB. Three things hold:
 - **A cut is an edit-local decision.** Cuts fall after a line end that a keyed
   hash of that line selects, so an edit moves the chunks around it and the
   cuts after it come back where they were. The key is a secret per gateway
-  (``gateway_chunk_key``): an author who cannot compute the hash cannot place
+  (``gateway_chunk_key``), sealed at rest: an author who cannot compute the hash cannot place
   a cut, so cannot arrange for an instruction to straddle one.
 - **Chunk size is bounded.** Never a cut before ``MIN_CHUNK`` bytes since the
   last, and never a chunk over ``MAX_CHUNK``: a line that would carry a chunk
@@ -26,8 +26,18 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import logging
 import os
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+from . import at_rest, secret_file
+from .errors import ProfileConfigError
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 MIN_CHUNK = 1024
 MAX_CHUNK = 8192
@@ -54,6 +64,9 @@ _SELECT_MASK = (1 << ((TARGET_CHUNK - MIN_CHUNK) // _MEAN_LINE).bit_length() - 1
 ``TARGET_CHUNK - MIN_CHUNK`` bytes of code."""
 
 KEY_BYTES = 32
+CHUNK_KEY_STORE = "git"
+"""The chunk key's directory under ``<data>``, one of ``at_rest.SEALED_DIRS``."""
+CHUNK_KEY_NAME = "chunk-key"
 
 
 @dataclass(frozen=True)
@@ -80,30 +93,74 @@ def estimate_tokens(text: str) -> int:
     return -(-len(text.encode("utf-8")) // TOKEN_BYTES)
 
 
-def gateway_chunk_key(path: str) -> bytes:
-    """The gateway's chunking secret: 32 random bytes in the file at ``path``.
+def gateway_chunk_key(legacy: Path | None = None) -> bytes:
+    """The gateway's chunking secret: 32 random bytes in ``<data>/git/chunk-key``.
 
-    Created ``0600`` with ``os.urandom`` when absent. ``O_EXCL`` makes the
-    creation race-safe: a loser reads what the winner wrote.
+    Kept like every other secret on the volume: sealed by ``at_rest`` when
+    there is a KEK, so ``at_rest.seal_all`` and a KEK rotation reach it. Held
+    under the store's lock, so a second caller, in this process or another,
+    reads what the first wrote.
+
+    ``legacy`` is where the key was kept before (a1706), 0600 plaintext beside
+    the perimeter store. A key found there is moved in, sealed and read back
+    before the plaintext goes, so cuts stay where they were and so does every
+    cached chunk verdict. A KEK that failed its startup check cannot seal, so
+    the plaintext key is used where it is until that is fixed.
+
+    A new key is made only when there is none at all, and said so: cuts follow
+    the key, so see ``_NEW_KEY`` for what that costs.
+
+    Raises:
+        OSError: a key is stored and unreadable, or shorter than ``KEY_BYTES``.
+        ProfileConfigError: it is sealed and no key in the KEK opens it. Never
+            answered with a new key: the operator fixes the KEK instead.
     """
-    try:
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return _read_key(path)
-    with os.fdopen(fd, "wb") as handle:
-        handle.write(os.urandom(KEY_BYTES))
-    return _read_key(path)
+    directory = secret_file.private_dir(CHUNK_KEY_STORE)
+    path = directory / CHUNK_KEY_NAME
+    with secret_file.locked(directory):
+        # Writers hold this lock, so an empty file is a crash mid-write: no key.
+        stored = at_rest.read(path) if os.path.lexists(path) else b""
+        if stored:
+            key = _whole_key(stored, path)
+            if legacy is not None:
+                # A crash between the move and the unlink left the plaintext.
+                legacy.unlink(missing_ok=True)
+            return key
+        if legacy is not None and legacy.exists():
+            key = _whole_key(legacy.read_bytes(), legacy)
+            try:
+                sealed = at_rest.seal(key)
+            except ProfileConfigError:
+                logger.warning(
+                    "git chunk key: the KEK cannot seal this run, so the plaintext key "
+                    "beside the perimeter store is used where it is until it can"
+                )
+                return key
+            secret_file.replace_atomically(path, sealed)
+            if at_rest.read(path) != key:
+                raise OSError(errno.EIO, f"{path} did not read back; the plaintext key kept")
+            legacy.unlink()
+            logger.info("git chunk key: moved into %s/%s", CHUNK_KEY_STORE, CHUNK_KEY_NAME)
+            return key
+        key = os.urandom(KEY_BYTES)
+        secret_file.replace_atomically(path, at_rest.seal(key))
+    logger.warning("%s", _NEW_KEY)
+    return key
 
 
-def _read_key(path: str) -> bytes:
-    # The creator may not have written yet: a short read is waited out briefly.
-    for _ in range(100):
-        with open(path, "rb") as handle:
-            key = handle.read()
-        if len(key) >= KEY_BYTES:
-            return key[:KEY_BYTES]
-        os.sched_yield()
-    raise OSError(errno.EIO, f"chunk key file {path} is shorter than {KEY_BYTES} bytes")
+_NEW_KEY = (
+    "git chunk key: none was stored, so a new one was made. Cuts follow the key, so every "
+    "text blob is cut afresh and judged again at L2 and L3. Cached chunk verdicts stay "
+    "true (a chunk's verdict key is its text, not the cut key) but the new chunks no "
+    "longer match them, and they age out of git_verdicts. Expected once, on a new data "
+    "volume; otherwise the key was lost"
+)
+
+
+def _whole_key(stored: bytes, path: Path) -> bytes:
+    if len(stored) < KEY_BYTES:
+        raise OSError(errno.EIO, f"chunk key file {path} is shorter than {KEY_BYTES} bytes")
+    return stored[:KEY_BYTES]
 
 
 def chunk_blob(blob: bytes, key: bytes) -> list[Chunk]:

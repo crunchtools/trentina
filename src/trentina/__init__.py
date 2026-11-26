@@ -112,6 +112,9 @@ def main() -> None:
                 from .gateway.at_rest import configure as configure_at_rest
 
                 configure_at_rest()
+                from .gateway.git_fetch import migrate_chunk_key
+
+                migrate_chunk_key()
                 _run_with_gateway(mcp, host=args.host, port=args.port, log_level=log_level)
             else:
                 mcp.run(
