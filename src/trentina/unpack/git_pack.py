@@ -320,14 +320,17 @@ class PackReader:
 
     @property
     def declared(self) -> int:
+        """The object count the pack header declares; 0 until the header is read."""
         return self._declared
 
     @property
     def read(self) -> int:
+        """Entries read whole so far; a delta counts before its base resolves."""
         return self._read
 
     @property
     def arrived(self) -> int:
+        """Raw pack bytes fed in so far, held to ``max_arrived``."""
         return self._arrived
 
     @contextlib.contextmanager

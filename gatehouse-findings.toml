@@ -130,3 +130,11 @@ file = "src/trentina/gateway/git_judge.py"
 evidence = "unit = self._unit(text, \"\", \"git_blob\", whole=True)\nself._add(unit, oid, state)"
 status = "not-a-bug"
 reason = "Spec 027 v0.3.0 (approved by Josui Prime) requires it: a tip file of at most 16K tokens is judged whole at L3 on top of its chunks, because it is the file an agent opens. The two are different payloads, not one payload read twice: a chunk is a keyed slice behind a 64-token lead-in, cached across every version of history that carries it, and its verdict is reused for files that are not at the tip; the whole file is the tip's exact bytes, which no chunk group contains, so an instruction split across chunk boundaries is read as one only here. Dropping the chunk read would leave history unjudged at L3 when the tip moves; dropping the whole read reopens the split-instruction residual the spec closes for the file the agent opens. a1062."
+
+[[findings]]
+agent = "constitution"
+category = "constitution"
+file = "src/trentina/gateway/git_chunks.py"
+evidence = "key = os.urandom(KEY_BYTES)\nsecret_file.replace_atomically(path, at_rest.seal(key))"
+status = "not-a-bug"
+reason = "The chunk key follows the gateway's one at-rest policy, at_rest.seal, like every other secret: sealed whenever TRENTINA_SECRETS_KEK is set, and a KEK that failed its startup check raises rather than writing plaintext. With no KEK configured nothing in the data volume is sealed, and seal_all seals this file with the rest the first time one is. Refusing to make a key without a KEK would turn off git judging on a deployment that has chosen not to run one, for a key that only keys chunk cuts. a1062."
