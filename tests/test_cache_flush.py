@@ -8,6 +8,7 @@ gw-work and gw-personal together, in whatever profile they lived.
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -252,3 +253,79 @@ class TestUnknownCaller:
 
         assert result["flushed"] == "nothing"
         assert len(_tool_list_cache) == 3
+
+
+class TestGitVerdicts:
+    """`git_verdicts=True` is the operator's flush of the git verdict store."""
+
+    @staticmethod
+    def _seed() -> None:
+        from trentina.gateway import git_judge
+        from trentina.perimeter_db import get_perimeter_db, save_git_verdicts
+
+        save_git_verdicts([("k1", None, time.time()), ("k2", None, time.time())], "s")
+        git_judge._memory["k1"] = (time.time(), None)
+        git_judge._pending_writes.append(("k1", None, time.time()))
+        assert get_perimeter_db().execute("SELECT COUNT(*) FROM git_verdicts").fetchone()[0] == 2
+
+    @staticmethod
+    def _stored() -> int:
+        from trentina.perimeter_db import get_perimeter_db
+
+        return get_perimeter_db().execute("SELECT COUNT(*) FROM git_verdicts").fetchone()[0]
+
+    async def test_operator_flushes_store_and_memory(self, gateway: dict) -> None:
+        from trentina.gateway import git_judge
+
+        self._seed()
+        with profile_context(gateway["alpha"]):
+            result = await cache_flush(git_verdicts=True)
+
+        assert result == {
+            "flushed": "git_verdicts",
+            "scope": "gateway",
+            "git_verdicts_deleted": 2,
+        }
+        assert self._stored() == 0
+        assert not git_judge._memory
+        assert not git_judge._pending_writes
+        # Only git verdicts: the tool list caches are untouched.
+        assert len(_tool_list_cache) == 3
+
+    async def test_agent_is_refused_and_its_aggregate_untouched(self, gateway: dict) -> None:
+        self._seed()
+        with profile_context(gateway["beta"]):
+            result = await cache_flush(git_verdicts=True)
+
+        assert result == {"flushed": "nothing", "error": "git_verdicts is operator only"}
+        assert self._stored() == 2
+        assert "beta" in _profile_tools_cache
+
+    async def test_backend_with_git_verdicts_is_refused(self, gateway: dict) -> None:
+        self._seed()
+        with profile_context(gateway["alpha"]):
+            result = await cache_flush("wiki", git_verdicts=True)
+
+        assert result == {"flushed": "nothing", "error": "git_verdicts takes no backend"}
+        assert self._stored() == 2
+
+    async def test_a_failed_delete_is_returned_not_raised(
+        self, gateway: dict, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def boom() -> int:
+            raise RuntimeError("disk")
+
+        monkeypatch.setattr("trentina.tools.cache.delete_git_verdicts", boom)
+        with profile_context(gateway["alpha"]):
+            result = await cache_flush(git_verdicts=True)
+
+        assert result["flushed"] == "nothing"
+        assert "error" in result
+
+    async def test_default_call_leaves_git_verdicts_alone(self, gateway: dict) -> None:
+        self._seed()
+        with profile_context(gateway["alpha"]):
+            result = await cache_flush()
+
+        assert result["flushed"] == "all"
+        assert self._stored() == 2

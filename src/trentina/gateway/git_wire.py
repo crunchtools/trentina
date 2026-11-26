@@ -605,6 +605,45 @@ def is_promisor_fetch(body: bytes, protocol: str | None) -> bool:
     return filtered and bool(wanted)
 
 
+def listed_tips(listing: bytes) -> list[str]:
+    """The object ids a ref listing names: each ref's and each peeled tag's.
+
+    Read from the rewritten listing, so only refs the agent was shown count.
+    A v0 ``capabilities^{}`` line names no object and is left out.
+    """
+    tips: list[str] = []
+    for packet in pkt_lines(listing):
+        if isinstance(packet, int) or not _is_ref_line(packet):
+            continue
+        fields = _text(packet).partition(b"\0")[0].split(b" ")
+        if fields[1] != b"capabilities^{}":
+            tips.append(fields[0].decode())
+        tips += [
+            peeled.decode()
+            for field in fields[2:]
+            if field.startswith(b"peeled:") and _OID_RE.fullmatch(peeled := field[7:])
+        ]
+    return tips
+
+
+def is_cold_fetch(body: bytes, protocol: str | None) -> bool:
+    """True for a fetch with nothing to negotiate from: wants and no ``have``.
+
+    A clone, shallow or not, and a fetch into an empty repository. A partial
+    clone's lazy fetch has no ``have`` either; the caller tells it apart with
+    ``is_promisor_fetch`` and the listed tips. git's stateless v2 negotiation
+    sends every ``have`` again in the round that asks for the pack, so that
+    round's body decides. A ``have`` is the client's claim, so this is only
+    the early hint: the pack's own object count decides as well
+    (``git_fetch.COLD_PACK_OBJECTS``).
+    """
+    wanted, _capabilities = _want_fields(body, protocol)
+    for packet in pkt_lines(body):
+        if not isinstance(packet, int) and _text(packet).partition(b" ")[0] == b"have":
+            return False
+    return bool(wanted)
+
+
 def negotiated_sideband(body: bytes, protocol: str | None) -> bool:
     """Whether the response carries its pack in side-band.
 

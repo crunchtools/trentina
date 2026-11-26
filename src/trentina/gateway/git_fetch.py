@@ -67,6 +67,7 @@ from .git_wire import (
     FetchResponse,
     GitRefusedError,
     PushResponse,
+    listed_tips,
     progress,
     rewrite_listing,
 )
@@ -105,6 +106,18 @@ LANE_QUEUE = 4
 
 BUSY = "busy"
 """The unjudged-pack reason for a fetch that found no judging slot."""
+
+COLD_PACK_OBJECTS = 1000
+"""A pack declaring more objects than this is judged as a clone, whatever its
+request said: ``have`` and ``filter`` lines are the client's to write, the
+pack header's count is the forge's. A slot judges about 1.3M tokens in the
+default 900 s ``judge_deadline`` (about 1,430 L2 tokens a second), and
+trentina's own history averages about 1,200 tokens an object, so past
+roughly 1,000 objects a fetch holds its slot to the deadline as a clone
+does. An everyday fetch brings tens to hundreds."""
+
+PACK_HEADER_BYTES = 12
+"""``PACK``, a version and the object count, each four bytes."""
 
 SLOT_GRACE = 60.0
 """Seconds past ``judge_deadline`` a judging slot is held at most, in case what
@@ -170,24 +183,43 @@ class _Slots:
     ``DEFAULT_LIMITS.max_inflated`` (2 GiB) each, the spool on the perimeter
     volume is bounded by their product, and the children's memory by the
     slots times the reader's address-space limit.
+
+    A cold fetch (no ``have``, a filtered fetch of the listed tips, or a pack
+    declaring more than ``COLD_PACK_OBJECTS``) takes at most ``cold_limit``
+    of them. A cold clone cannot finish judging inside
+    ``judge_deadline`` and holds its slot for all of it, so without the
+    bound two profiles cloning would leave every fetch after them, the
+    cheap ones that do finish, unjudged as ``busy``.
     """
 
     def __init__(self) -> None:
         self.total = 0
+        self.cold = 0
         self.by_profile: dict[str, int] = {}
 
-    def take(self, profile: str) -> bool:
+    @staticmethod
+    def cold_limit() -> int:
+        """Half the gateway's slots, and one where there is only one."""
+        judges = get_config().git_judges
+        return min(judges, max(1, judges // 2))
+
+    def take(self, profile: str, *, cold: bool = False) -> bool:
         config = get_config()
         if self.total >= config.git_judges:
             return False
         if self.by_profile.get(profile, 0) >= config.git_profile_judges:
             return False
+        if cold and self.cold >= self.cold_limit():
+            return False
         self.total += 1
+        self.cold += cold
         self.by_profile[profile] = self.by_profile.get(profile, 0) + 1
         return True
 
-    def release(self, profile: str) -> None:
+    def release(self, profile: str, *, cold: bool = False) -> None:
         self.total = max(self.total - 1, 0)
+        if cold:
+            self.cold = max(self.cold - 1, 0)
         left = self.by_profile.get(profile, 0) - 1
         if left > 0:
             self.by_profile[profile] = left
@@ -198,7 +230,14 @@ class _Slots:
 _slots = _Slots()
 
 
-async def _hold(profile: str, judge: asyncio.Task[None], feeder: _Feeder, deadline: float) -> None:
+async def _hold(
+    profile: str,
+    judge: asyncio.Task[None],
+    feeder: _Feeder,
+    deadline: float,
+    *,
+    cold: bool = False,
+) -> None:
     """Keep the profile's judging slot until the reader has ended and the judge
     task has settled, however the response ended; at the latest ``SLOT_GRACE``
     past the deadline, which bounds both."""
@@ -209,7 +248,7 @@ async def _hold(profile: str, judge: asyncio.Task[None], feeder: _Feeder, deadli
     except TimeoutError:
         logger.warning("git judge: a judging slot was released at its backstop")
     finally:
-        _slots.release(profile)
+        _slots.release(profile, cold=cold)
 
 
 # --- the chunk key -------------------------------------------------------------
@@ -248,6 +287,35 @@ _FLAGGED_REFS_MAX = 1024
 _flagged_refs: OrderedDict[tuple[str, str], int] = OrderedDict()
 
 
+# --- the tips a listing named, to tell a filtered clone from a lazy fetch ------
+
+MAX_TIPS = 262_144
+"""Object ids remembered across every repository's last listing; past it the
+least recently listed repository is forgotten. A want that is not found
+reads as a lazy fetch, and the pack's own count still applies."""
+
+_tips: OrderedDict[tuple[str, str], frozenset[str]] = OrderedDict()
+_tips_held = 0
+
+
+def remember_tips(profile: str, slug: str, tips: list[str]) -> None:
+    """Keep the object ids ``slug``'s listing showed ``profile``, newest last."""
+    global _tips_held
+    held = frozenset(tips[:MAX_TIPS])
+    _tips_held -= len(_tips.pop((profile, slug), ()))
+    _tips[(profile, slug)] = held
+    _tips_held += len(held)
+    while _tips_held > MAX_TIPS:
+        _tips_held -= len(_tips.popitem(last=False)[1])
+
+
+def at_tips(profile: str, slug: str, wants: list[str]) -> bool:
+    """True when a want is a ref tip ``slug``'s last listing showed: a clone
+    or a fetch of a branch, never a partial clone's lazy fetch of a blob."""
+    tips = _tips.get((profile, slug), frozenset())
+    return any(want in tips for want in wants)
+
+
 def _remember_refs(profile: str, slug: str, count: int) -> None:
     if count:
         _flagged_refs[(profile, slug)] = count
@@ -270,6 +338,9 @@ class Fetch:
     v2: bool
     wants: list[str]
     object_format: str = "sha1"
+    #: The request says clone: no ``have`` (``git_wire.is_cold_fetch``), or a
+    #: filtered fetch of the listed tips. The pack header can say so too.
+    cold: bool = False
 
 
 def new_call_ref() -> str:
@@ -501,6 +572,13 @@ def _account(judge: GitJudge, refused: str | None) -> dict[str, str]:
     return counts
 
 
+def _declared_objects(pack: bytes) -> int:
+    """The object count a pack header declares; 0 when it is not one."""
+    if len(pack) < PACK_HEADER_BYTES or not pack.startswith(b"PACK"):
+        return 0
+    return int.from_bytes(pack[8:PACK_HEADER_BYTES], "big")
+
+
 class _FetchRelay:
     """One fetch answer's state: the parser, the held tail, and the judging,
     started at the first pack byte (a v2 negotiation round carries none)."""
@@ -515,12 +593,15 @@ class _FetchRelay:
         self.feeder: _Feeder | None = None
         self.refs = _flagged_refs.pop((fetch.profile.name, fetch.slug), 0)
         self.busy = False
+        self.cold = fetch.cold
+        #: The pack's first bytes, held for its header before a slot is taken.
+        self.head = bytearray()
 
     def _start(self) -> _Feeder | None:
         """The judging of this fetch, or None when no slot is free: the pack
         then goes on unjudged, named ``busy``."""
         op, fetch = self.ctx.op, self.fetch
-        if self.busy or not _slots.take(fetch.profile.name):
+        if self.busy or not _slots.take(fetch.profile.name, cold=self.cold):
             self.busy = True
             return None
         task: asyncio.Task[None] | None = None
@@ -547,7 +628,13 @@ class _FetchRelay:
             task = self.judge.start(float(fetch.grant.judge_deadline))
             self.feeder = _Feeder(reading, self.judge)
             hold = asyncio.ensure_future(
-                _hold(fetch.profile.name, task, self.feeder, float(fetch.grant.judge_deadline))
+                _hold(
+                    fetch.profile.name,
+                    task,
+                    self.feeder,
+                    float(fetch.grant.judge_deadline),
+                    cold=self.cold,
+                )
             )
             _CLOSING.add(hold)
             hold.add_done_callback(_CLOSING.discard)
@@ -555,13 +642,27 @@ class _FetchRelay:
             # _hold gives the slot back once it runs; before that, this does.
             if task is not None:
                 task.cancel()
-            _slots.release(fetch.profile.name)
+            _slots.release(fetch.profile.name, cold=self.cold)
             raise
         return self.feeder
 
-    async def _feed(self, pack: bytes) -> None:
-        if feeder := self.feeder or self._start():
-            await feeder.feed(pack)
+    async def _feed(self, pack: bytes, *, ended: bool = False) -> None:
+        """Hand pack bytes to the judging. The first ``PACK_HEADER_BYTES`` are
+        held until they are all here (or the pack ended short), so the slot is
+        taken knowing how many objects the forge says it is sending."""
+        if self.feeder is None:
+            if self.busy:
+                return
+            self.head += pack
+            if len(self.head) < PACK_HEADER_BYTES and not (ended and self.head):
+                return
+            pack = bytes(self.head)
+            self.head.clear()
+            self.cold = self.cold or _declared_objects(pack) > COLD_PACK_OBJECTS
+            if self._start() is None:
+                return
+        if self.feeder is not None and pack:
+            await self.feeder.feed(pack)
 
     async def take(self, piece: bytes) -> AsyncIterator[bytes]:
         """What to send on for one piece of the forge's answer."""
@@ -577,6 +678,7 @@ class _FetchRelay:
             elif event == "forge_error":
                 out += progress("Trentina: the forge reported an error")
             elif event == "end":
+                await self._feed(b"", ended=True)
                 if out:
                     yield bytes(out)
                     out.clear()
@@ -725,6 +827,7 @@ async def relay_listing(
         return
     flagged = await _judge_names(op, names, profile=profile, grant=grant, source=source)
     _remember_refs(profile.name, slug, flagged)
+    remember_tips(profile.name, slug, listed_tips(listing))
     yield listing
     unjudged = op.normalized is not None and op.normalized["git_unjudged"] != "0"
     op.settle(Outcome.OK, _found(flagged, unjudged))
