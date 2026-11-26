@@ -246,21 +246,22 @@ class TestTelemetryDisabled:
     def test_operator_can_override(self) -> None:
         """setdefault, not assignment — an explicit opt-in must survive.
 
-        Imported fresh in a child: reloading the module here would rebind its
-        ``BACKGROUND`` context variable under every caller already holding
-        the old one, and break later tests in this worker that use both.
+        Imported in a child: reloading the module here would replace its
+        globals, ``BACKGROUND`` among them, under every test that imported them.
         """
         from trentina.quarantine.classifier import TELEMETRY_ENV
 
-        probe = "import os, trentina.quarantine.classifier as m; print(os.environ[m.TELEMETRY_ENV])"
-        done = subprocess.run(
+        probe = (
+            "import os, trentina.quarantine.classifier as mod; print(os.environ[mod.TELEMETRY_ENV])"
+        )
+        child = subprocess.run(
             [sys.executable, "-c", probe],
             env={**os.environ, TELEMETRY_ENV: "0"},
             capture_output=True,
             text=True,
             check=True,
         )
-        assert done.stdout.strip() == "0"
+        assert child.stdout.strip() == "0"
 
 
 class TestWindowGeometry:
