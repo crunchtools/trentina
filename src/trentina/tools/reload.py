@@ -459,7 +459,7 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
     # Perimeter end to end, held whole: the bridge's plaintext side (#162),
     # tunnelling (#442), push repos (#453), HTTP destinations (#511), route
     # grants (#535), what a gatekeeper judges (#456) and the session cool-down
-    # that keeps a fresh session from shedding its labels (#900), and federated
+    # that keeps another session from shedding its labels (#900), and federated
     # peers, since a key an agent adds could mint any caller (#592). llm_keys is
     # not held: a key buys model calls, a grant one more place to send to.
     for block in (

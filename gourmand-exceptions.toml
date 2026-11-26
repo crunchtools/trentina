@@ -1278,35 +1278,9 @@ symbol = "_profile"
 justification = "Not single-use: _profile is called at test_field_select.py:125 (the default in _call), :238 (the guarded profile) and :269 (the instructions test). The check appears to count only the call whose result is assigned to a name, not one inside an `or` or passed as an argument."
 classification = "gourmand_bug"
 
-# --- session_marks (#900): guard-clause skeletons, not shared logic ---
-# mark and admit each check the session, read the clock, touch one table entry
-# and trim the table; _pin_one has the same statement shape over tool pins.
-# clear() resets module state the way every reset_* helper does.
-
-[[exceptions]]
-check = "copy_paste_detection"
-path = "src/trentina/gateway/session_marks.py"
-pattern = "mark"
-justification = "mark sets a label on one session's entry; admit (same file) starts a new session unknown, and tool_pins._pin_one records a pin. They share a guard-then-update-then-trim statement shape and no logic; merging mark and admit would make one function both label a session and decide whether a new one inherits its profile's window"
-classification = "by_design"
-
-[[exceptions]]
-check = "copy_paste_detection"
-path = "src/trentina/gateway/session_marks.py"
-pattern = "admit"
-justification = "Structural match with tool_pins._pin_one and mark: guard clauses then one table write. admit decides the #900 cool-down for a new session; nothing in it is pin logic"
-classification = "by_design"
-
 [[exceptions]]
 check = "copy_paste_detection"
 path = "src/trentina/gateway/session_marks.py"
 pattern = "clear"
-justification = "A test reset of module state, four table clears and the unknown-window reset, all this module's own state; verdict_cache.reset_verdict_cache resets different tables in the same shape"
+justification = "A test reset of this module's own state (three table clears and the unknown-window reset, #900); verdict_cache.reset_verdict_cache resets different tables in the same shape"
 classification = "by_design"
-
-[[exceptions]]
-check = "copy_paste_detection"
-path = "src/trentina/unpack/alphabets.py"
-item = "decode_base2048"
-justification = "Base2048 decoding shares only a guard-then-loop-then-build statement shape with discovery._index, paging and session_marks.admit (#900, which prunes and caps the cool-down admissions); the discovery side is already excepted for the same reason, and no logic is common"
-classification = "gourmand_bug"

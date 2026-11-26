@@ -22,23 +22,15 @@ sessions would launder an older one. So until every dropped entry would have
 expired anyway, a session with no entry is unknown (None) rather than clean:
 the judge is told so, and ``refuse_when`` refuses it (#457).
 
-Nor may a fresh session launder a marked one (#900). An agent sheds its
-labels by starting over: ``initialize`` mints a new session, and an id this
-process never issued is adopted (``sessions.adopt``), and either way the
-fingerprint is new and reads clean. So a mark also records when the
-session's profile was last marked, the profile taken from the request that
-set it (``current_session_profile``), never from a table a teardown can
-empty first. For the profile's ``session_mark_cooldown_seconds`` after that
-mark, a session newly minted or adopted for it (:func:`admit`) starts
-unknown (None), and ``refuse_when`` refuses it until the window passes.
-Sessions that already existed keep their own labels: a mark on one session
-never touches another.
-
-Admissions live in a table of their own, never in ``_marks``: a flood of
-cheap ``initialize`` calls from a marked profile must not evict another
-profile's marks and widen the gateway-wide unknown window. Past
-``MAX_MARKS`` unknown admissions the oldest is dropped, and the window it
-held moves to its profile alone (``_overflow_until``).
+Nor may a session launder a marked one by moving to another session of the
+same profile (#900): one opened beforehand, a fresh ``initialize``, or an id
+this process never issued and adopts (``sessions.adopt``). So a mark opens a
+window on its PROFILE: for ``session_mark_cooldown_seconds`` every other
+session of that profile, live or new, reads unknown (None) and ``refuse_when``
+refuses it. The session that set the mark keeps reading its own labels. The
+profile is the one the request bound (:func:`bind`, ``current_session_profile``),
+never a per-session table a teardown or a flood could empty first, so the
+state is one entry per profile and a flood of sessions costs nothing.
 """
 
 from __future__ import annotations
@@ -63,6 +55,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MARK_TTL_SECONDS = 12 * 3600
+COOLDOWN_DEFAULT = 1800.0
+"""Seconds a profile's other sessions read unknown after a mark (#900)."""
 MAX_MARKS = 10_000
 
 
@@ -93,13 +87,10 @@ class _Entry:
 _marks: OrderedDict[str, _Entry] = OrderedDict()
 _unknown_until = 0.0
 """Monotonic time before which a session with no entry may be one we dropped."""
-_profile_marked: dict[str, float] = {}
-"""Profile name to the monotonic time any of its sessions was last marked."""
-_admitted: OrderedDict[str, tuple[str, float]] = OrderedDict()
-"""Session admitted inside its profile's cool-down: (profile, unknown until)."""
-_overflow_until: dict[str, float] = {}
-"""Profile to the time before which a session of it with no admission entry
-may be one ``_admitted`` dropped."""
+_cooldowns: dict[str, float] = {}
+"""Profile to its ``session_mark_cooldown_seconds``, as last bound."""
+_windows: dict[str, tuple[float, str]] = {}
+"""Profile to (cool-down end, the session whose mark opened it)."""
 
 
 def mark(session: str, label: SessionLabel, profile: str | None = None) -> bool:
@@ -116,8 +107,9 @@ def mark(session: str, label: SessionLabel, profile: str | None = None) -> bool:
     first = current is None or label not in current
     now = time.monotonic()
     owner = profile or current_session_profile.get()
-    if owner:
-        _profile_marked[owner] = now
+    cooldown = _cooldowns.get(owner, COOLDOWN_DEFAULT) if owner else 0.0
+    if cooldown > 0:
+        _windows[owner] = (now + cooldown, session)
     # A session evicted by a flood and labelled again must not read as having
     # only its new label: its dropped ones may have refused it. A window
     # already past reads as known, so it needs no special case.
@@ -135,35 +127,14 @@ def mark(session: str, label: SessionLabel, profile: str | None = None) -> bool:
     return first
 
 
-def admit(session: str, profile: str, cooldown_seconds: float) -> bool:
-    """Register a session newly minted or adopted for *profile* (#900).
+def bind(profile: str, cooldown_seconds: float) -> None:
+    """Bind the request's profile and record its cool-down (#900).
 
-    Within *cooldown_seconds* of the last mark on any of the profile's
-    sessions, the new session starts unknown until that window passes, so
-    starting over does not shed a label. 0 turns it off. Returns True when
-    the session starts unknown.
+    Called at the gateway edge beside ``current_session``, so every mark and
+    every read inside the request knows the profile without a table lookup.
     """
-    if not session:
-        return False
-    marked = _profile_marked.get(profile)
-    now = time.monotonic()
-    if cooldown_seconds <= 0 or marked is None or now >= marked + cooldown_seconds:
-        return False
-    _admitted[session] = (profile, marked + cooldown_seconds)
-    _admitted.move_to_end(session)
-    while _admitted and _admitted[next(iter(_admitted))][1] <= now:
-        _admitted.popitem(last=False)
-    while len(_admitted) > MAX_MARKS:
-        _, (dropped_profile, until) = _admitted.popitem(last=False)
-        _overflow_until[dropped_profile] = max(_overflow_until.get(dropped_profile, 0.0), until)
-    logger.info(
-        "gateway: session %s… admitted unknown for profile=%s, marked %.0fs ago (cool-down %.0fs)",
-        session[:8],
-        profile,
-        now - marked,
-        cooldown_seconds,
-    )
-    return True
+    current_session_profile.set(profile)
+    _cooldowns[profile] = cooldown_seconds
 
 
 def labels(session: str) -> frozenset[SessionLabel] | None:
@@ -176,16 +147,11 @@ def labels(session: str) -> frozenset[SessionLabel] | None:
     if not session:
         return None
     now = time.monotonic()
-    # Inside the cool-down it was admitted in (#900), or possibly so: its
-    # profile's admissions overflowed and this one may have been dropped.
-    admitted = _admitted.get(session)
-    if admitted is None:
-        if now < _overflow_until.get(current_session_profile.get(), 0.0):
-            return None
-    elif now < admitted[1]:
+    # Another session of a profile marked within its cool-down (#900): one
+    # opened beforehand or since, minted or adopted, all read unknown.
+    window = _windows.get(current_session_profile.get())
+    if window is not None and now < window[0] and session != window[1]:
         return None
-    else:
-        del _admitted[session]
     entry = _marks.get(session)
     if entry is None:
         return None if now < _unknown_until else frozenset()
@@ -207,9 +173,8 @@ def clear() -> None:
     """Forget every mark. For tests."""
     global _unknown_until
     _marks.clear()
-    _profile_marked.clear()
-    _admitted.clear()
-    _overflow_until.clear()
+    _cooldowns.clear()
+    _windows.clear()
     _unknown_until = 0.0
 
 

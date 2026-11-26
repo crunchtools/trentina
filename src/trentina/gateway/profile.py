@@ -34,7 +34,7 @@ from ..config import MODE_NAMES, SUPPORTED_PROVIDERS, canonical_mode
 from ..credential_shapes import CredentialKind
 from ..credential_shapes import kinds as credential_kinds
 from .key_store import KEY_NAME_RE
-from .session_marks import FLAG_LABELS, SessionLabel
+from .session_marks import COOLDOWN_DEFAULT, FLAG_LABELS, SessionLabel
 
 logger = logging.getLogger(__name__)
 
@@ -2467,8 +2467,7 @@ class SemanticGuardsConfig(BaseModel):
         return upstream in self.egress_http
 
 
-SESSION_MARK_COOLDOWN_DEFAULT = 1800.0
-"""Seconds a fresh session of a marked profile starts unknown (#900)."""
+SESSION_MARK_COOLDOWN_DEFAULT = COOLDOWN_DEFAULT
 SESSION_MARK_COOLDOWN_MAX = 86400.0
 
 
@@ -3760,10 +3759,11 @@ class Profile(BaseModel):
         le=SESSION_MARK_COOLDOWN_MAX,
         description=(
             "For this long after any session of the profile is labelled "
-            "(``flagged_delivery``, ``tripped``, ``credential_seen``), a session "
-            "newly minted or adopted for the profile starts unknown, so "
-            "``refuse_when`` refuses it until the window passes (#900). Starting "
-            "over must not shed a label. 0 turns it off."
+            "(``flagged_delivery``, ``tripped``, ``credential_seen``), every "
+            "other session of the profile, live or newly minted or adopted, "
+            "reads unknown, so ``refuse_when`` refuses its guarded calls until "
+            "the window passes (#900). Moving to another session must not shed "
+            "a label. 0 turns it off."
         ),
     )
     semantic_request_guards: SemanticGuardsConfig | None = Field(

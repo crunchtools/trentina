@@ -143,7 +143,7 @@ def derive_ingress(source: Profile) -> Profile:
     Why each ``CARRIED`` field is carried: ``defense`` is the perimeter
     posture; the two ``semantic_*_guards`` read calls and responses against the
     operator's policy, and ``session_mark_cooldown_seconds`` keeps a peer from
-    starting a session over to shed what those guards refuse on (#900);
+    moving to another session to shed what those guards refuse on (#900);
     ``preprocess`` shapes the bytes, and a trusted response
     skips the primary's chain so the secondary's is the only one that runs;
     ``llm_keys`` is what makes L3 resolve at all, without which ``block`` and

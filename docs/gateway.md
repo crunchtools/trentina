@@ -66,8 +66,9 @@ What adoption does **not** carry over:
 - **Flag marks.** `session_marks` is in-memory too, and a fingerprint it has
   never seen reads clean, so re-initializing or presenting an id to adopt
   would shed a session's labels. The profile's cool-down closes that (#900):
-  within `session_mark_cooldown_seconds` of a label on any of its sessions, a
-  minted or adopted session starts unknown and `refuse_when` refuses it. See
+  within `session_mark_cooldown_seconds` of a label on any of its sessions,
+  every other session of the profile, adopted ones included, reads unknown
+  and `refuse_when` refuses it. See
   [Semantic Request Guards](semantic-request-guards.md). A restart forgets the
   marks and the cool-down alike.
 - **TTL expiry inside one process.** A seat idle past

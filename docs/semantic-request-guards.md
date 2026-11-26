@@ -172,35 +172,33 @@ a person talks to. Those read flagged content routinely, often because the
 person asked them to read about an attack, and would lose their guarded tools
 for the rest of the session.
 
-### Starting over does not shed a label
+### Moving to another session does not shed a label
 
 Labels belong to a session, and a session is whatever ID the client presents,
-so an agent could shed its labels by starting over: send `initialize` with no
-or a stale session header and get a new session, or present any well-formed ID
-the gateway never issued and have it adopted. Each would read clean (#900).
+so an agent could shed its labels by moving: carry on in a session it opened
+beforehand, send `initialize` for a new one, or present any well-formed ID the
+gateway never issued and have it adopted. Each would read clean (#900).
 
 So a profile has a cool-down. For `session_mark_cooldown_seconds` (default
-1800, 30 minutes) after any session of the profile is labelled, a session newly
-minted or adopted for that profile starts **unknown**, the same state as a
-client that sends no session ID: `refuse_when` and `refuse_when_flagged` refuse
-its guarded calls with `session_flagged`, and the judge is told the session is
-unknown. When the window passes the new session reads clean, unless it has been
-labelled itself. Each later label restarts the window for sessions admitted
-after it.
+1800, 30 minutes) after any session of the profile is labelled, **every other
+session of that profile** reads **unknown**, whether it was live already,
+minted since or adopted: the same state as a client that sends no session ID.
+`refuse_when` and `refuse_when_flagged` refuse its guarded calls with
+`session_flagged`, and the judge is told the session is unknown. The session
+that was labelled keeps reading its own labels. Each later label restarts the
+window, from the session that set it. When the window passes, every session
+reads its own labels again.
 
-Only new sessions are affected. A session that already existed keeps its own
-labels, so a person's other seat on the same profile is untouched by a mark on
-this one, and a label stays on the session that earned it. `0` turns the
-cool-down off; the ceiling is 86400. It is perimeter: an agent's own
-`reload_profiles` cannot change it, and a federation ingress carries its
-source's. Held in memory, like the labels, so a gateway restart forgets both.
+That includes a person's other seat on the same profile: one mark costs every
+session of the profile its guarded calls for the window. Give seats that must
+not share that fate their own profiles. `0` turns the cool-down off; the
+ceiling is 86400. It is perimeter: an agent's own `reload_profiles` cannot
+change it, and a federation ingress carries its source's.
 
-A label records its profile from the request that set it, so a session deleted
-while its flagged response is in flight still starts the window. The new
-sessions admitted unknown are kept in a table of their own, at most 10,000;
-past that the oldest is dropped and, until its window would have closed, any
-session of that profile without an entry reads unknown too. A flood of
-`initialize` calls costs only the profile that sends it.
+The window is one entry per profile, bound from the request at the gateway
+edge, so a session deleted while its flagged response is in flight still opens
+it, and a flood of sessions stores nothing. Held in memory, like the labels, so
+a gateway restart forgets both.
 
 The first mark on a session is logged once, with the `call_ref` of the call
 whose response carried the flag, so the audit row that tainted it can be
@@ -298,7 +296,7 @@ code and nothing else:
 | `other` | judge | A refusal with no listed reason, or an answer that was not an explicit allow. |
 | `arguments_flagged` | layers | L1, L2 or L3 flagged the arguments. |
 | `arguments_unjudged` | layers | The layers could not finish reading the arguments. |
-| `session_flagged` | gateway | `refuse_when` or `refuse_when_flagged` lists a label this session carries (`flagged_delivery`, `tripped`), or the session is unknown: it sent no session ID, or it was minted or adopted within the profile's `session_mark_cooldown_seconds` of a label on another of its sessions (#900). |
+| `session_flagged` | gateway | `refuse_when` or `refuse_when_flagged` lists a label this session carries (`flagged_delivery`, `tripped`), or the session is unknown: it sent no session ID, or another session of its profile was labelled within the profile's `session_mark_cooldown_seconds` (#900). |
 | `session_credential_seen` | gateway | `refuse_when` lists `credential_seen`, and this session was delivered a credential. |
 | `gatekeeper_unavailable` | gateway | No judge is configured, or it failed, timed out, answered off-schema or leaked its canary. |
 

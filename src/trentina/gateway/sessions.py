@@ -211,11 +211,11 @@ class SessionRegistry:
         session's labels (``session_marks``).  A fingerprint the marks table has
         never seen reads clean, so adoption, like a fresh ``initialize``, is a
         way to shed them: an agent can present any well-formed id.  What stops
-        that is the profile's cool-down (#900): the gateway calls
-        ``session_marks.admit`` on every adopted and minted session, and within
+        that is the profile's cool-down (#900): within
         ``session_mark_cooldown_seconds`` of a mark on any session of the
-        profile the new one starts unknown, which ``refuse_when`` refuses.  A
-        restart forgets the marks and the cool-down alike.
+        profile, every other session of it, an adopted one included, reads
+        unknown, which ``refuse_when`` refuses.  A restart forgets the marks
+        and the cool-down alike.
         """
         if SESSION_ID_RE.match(session_id) is None:
             return None

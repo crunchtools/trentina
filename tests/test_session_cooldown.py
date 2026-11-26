@@ -1,25 +1,30 @@
-"""Starting over does not shed a session's labels (#900).
+"""Moving to another session does not shed a session's labels (#900).
 
-An agent whose session is labelled could send ``initialize`` with no or a
-stale session header and get a fresh, clean one, or present any well-formed
-id and have it adopted. Within the profile's ``session_mark_cooldown_seconds``
-of a mark on any of its sessions, a session newly minted or adopted for it
-starts unknown, which ``refuse_when`` refuses.
+An agent whose session is labelled could carry on in a session it opened
+beforehand, send ``initialize`` for a fresh one, or present any well-formed id
+and have it adopted. For the profile's ``session_mark_cooldown_seconds`` after
+a mark, every other session of the profile reads unknown, which
+``refuse_when`` refuses (Scott's ruling on #942).
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from pydantic import SecretStr, ValidationError
-from starlette.requests import Request
 from starlette.testclient import TestClient
 
 from trentina.gateway import session_marks
-from trentina.gateway.app import MCP_SESSION_ID_HEADER, _handle_get, gateway_app
-from trentina.gateway.context import current_session_profile, session_fingerprint
+from trentina.gateway.app import MCP_SESSION_ID_HEADER, gateway_app
+from trentina.gateway.context import (
+    current_session,
+    current_session_profile,
+    session_fingerprint,
+)
 from trentina.gateway.profile import (
     SESSION_MARK_COOLDOWN_DEFAULT,
     SESSION_MARK_COOLDOWN_MAX,
@@ -39,6 +44,92 @@ def _at(t: float) -> Any:
     return patch.object(session_marks.time, "monotonic", return_value=t)
 
 
+@contextmanager
+def _as(profile: str, cooldown: float = WINDOW) -> Iterator[None]:
+    """Inside a request of *profile*, as the gateway edge binds one."""
+    token = current_session_profile.set("")
+    try:
+        session_marks.bind(profile, cooldown)
+        yield
+    finally:
+        current_session_profile.reset(token)
+
+
+class TestWindow:
+    def test_a_session_opened_before_the_mark_is_cooled_down(self) -> None:
+        """Review finding 1: admit A and B, mark A, and B read clean."""
+        with _as("alice"), _at(T0):
+            session_marks.mark("fp-a", L.FLAGGED_DELIVERY)
+            assert session_marks.labels("fp-b") is None
+            assert session_marks.was_flagged("fp-b") is None
+            # The marked session keeps reading its own labels.
+            assert session_marks.labels("fp-a") == {L.FLAGGED_DELIVERY}
+
+    def test_a_session_minted_in_the_window_is_unknown(self) -> None:
+        with _as("alice"):
+            with _at(T0):
+                session_marks.mark("fp-a", L.TRIPPED)
+            with _at(T0 + 60):
+                assert session_marks.labels("fp-new") is None
+
+    def test_after_the_window_every_session_reads_clean(self) -> None:
+        with _as("alice"):
+            with _at(T0):
+                session_marks.mark("fp-a", L.TRIPPED)
+            with _at(T0 + WINDOW):
+                assert session_marks.labels("fp-b") == frozenset()
+                assert session_marks.labels("fp-a") == {L.TRIPPED}
+
+    def test_another_profile_is_unaffected(self) -> None:
+        with _as("alice"), _at(T0):
+            session_marks.mark("fp-a", L.TRIPPED)
+        with _as("bob"), _at(T0 + 60):
+            assert session_marks.labels("fp-bob") == frozenset()
+
+    def test_a_later_mark_moves_the_window_to_its_session(self) -> None:
+        with _as("alice"):
+            with _at(T0):
+                session_marks.mark("fp-a", L.CREDENTIAL_SEEN)
+            with _at(T0 + 1000):
+                session_marks.mark("fp-b", L.CREDENTIAL_SEEN)
+            with _at(T0 + WINDOW + 10):
+                assert session_marks.labels("fp-a") is None
+                assert session_marks.labels("fp-b") == {L.CREDENTIAL_SEEN}
+                assert session_marks.labels("fp-c") is None
+
+    def test_zero_turns_it_off(self) -> None:
+        with _as("alice", cooldown=0), _at(T0):
+            session_marks.mark("fp-a", L.TRIPPED)
+            assert session_marks.labels("fp-b") == frozenset()
+
+    def test_a_session_deleted_mid_call_still_opens_the_window(self) -> None:
+        """Review finding 2: a DELETE racing the flagged response emptied the
+        owner table, so the mark opened no window. The request's own binding
+        cannot be torn down under it."""
+        with _as("alice"), _at(T0):
+            session_marks.mark("fp-deleted-mid-call", L.TRIPPED)
+        with _as("alice"), _at(T0 + 1):
+            assert session_marks.labels("fp-d") is None
+
+    def test_a_flood_of_sessions_costs_nothing(self) -> None:
+        """Review finding 3: unknown admissions filled ``_marks``, so a flood of
+        initializes from a marked profile widened the gateway-wide window and
+        every other profile's clean session read None. The window is one entry
+        per profile, and another session reading it stores nothing."""
+        with _as("carol"), _at(T0):
+            session_marks.mark("fp-carol", L.CREDENTIAL_SEEN)
+        with _as("alice"), _at(T0):
+            session_marks.mark("fp-a", L.TRIPPED)
+            with patch.object(session_marks, "MAX_MARKS", 3):
+                for i in range(10):
+                    assert session_marks.labels(f"fp-flood-{i}") is None
+        assert len(session_marks._marks) == 2
+        with _as("bob"), _at(T0 + 60):
+            assert session_marks.labels("fp-bob") == frozenset()
+        with _as("carol"), _at(T0 + 60):
+            assert session_marks.labels("fp-carol") == {L.CREDENTIAL_SEEN}
+
+
 def _profile(name: str = "alice", cooldown: float | None = None) -> Profile:
     extra = {} if cooldown is None else {"session_mark_cooldown_seconds": cooldown}
     profile = Profile(
@@ -51,246 +142,91 @@ def _profile(name: str = "alice", cooldown: float | None = None) -> Profile:
     return profile
 
 
-def _marked(profile: str = "alice", at: float = T0) -> str:
-    """A session of *profile*, admitted and then labelled at *at*."""
-    fp = f"fp-marked-{profile}"
-    with _at(at):
-        session_marks.admit(fp, profile, WINDOW)
-        session_marks.mark(fp, L.FLAGGED_DELIVERY, profile)
-    return fp
-
-
-class TestAdmit:
-    def test_a_session_minted_in_the_window_is_unknown(self) -> None:
-        _marked()
-        with _at(T0 + 60):
-            assert session_marks.admit("fp-new", "alice", WINDOW) is True
-            assert session_marks.labels("fp-new") is None
-            assert session_marks.was_flagged("fp-new") is None
-
-    def test_after_the_window_it_reads_clean(self) -> None:
-        _marked()
-        with _at(T0 + 60):
-            session_marks.admit("fp-new", "alice", WINDOW)
-        with _at(T0 + WINDOW):
-            assert session_marks.labels("fp-new") == frozenset()
-
-    def test_a_session_admitted_after_the_window_is_clean(self) -> None:
-        _marked()
-        with _at(T0 + WINDOW + 1):
-            assert session_marks.admit("fp-new", "alice", WINDOW) is False
-            assert session_marks.labels("fp-new") == frozenset()
-
-    def test_another_profile_is_unaffected(self) -> None:
-        _marked("alice")
-        with _at(T0 + 60):
-            assert session_marks.admit("fp-bob", "bob", WINDOW) is False
-            assert session_marks.labels("fp-bob") == frozenset()
-
-    def test_an_existing_session_is_unaffected(self) -> None:
-        with _at(T0 - 10):
-            session_marks.admit("fp-old", "alice", WINDOW)
-        marked = _marked()
-        with _at(T0 + 60):
-            assert session_marks.labels("fp-old") == frozenset()
-            # The marked session keeps its own label; nothing else inherits it.
-            assert session_marks.labels(marked) == {L.FLAGGED_DELIVERY}
-
-    def test_a_later_mark_extends_the_window_for_later_sessions(self) -> None:
-        marked = _marked()
-        with _at(T0 + 1000):
-            session_marks.mark(marked, L.CREDENTIAL_SEEN, "alice")
-        with _at(T0 + WINDOW + 10):
-            assert session_marks.admit("fp-new", "alice", WINDOW) is True
-            assert session_marks.labels("fp-new") is None
-
-    def test_zero_turns_it_off(self) -> None:
-        _marked()
-        with _at(T0 + 60):
-            assert session_marks.admit("fp-new", "alice", 0) is False
-            assert session_marks.labels("fp-new") == frozenset()
-
-    def test_a_mark_takes_its_profile_from_the_request(self) -> None:
-        """Review finding 2: a DELETE racing the flagged response emptied the
-        owner table, so the mark started no window. The request's own binding
-        cannot be torn down under it."""
-        token = current_session_profile.set("alice")
-        try:
-            with _at(T0):
-                session_marks.mark("fp-deleted-mid-call", L.TRIPPED)
-        finally:
-            current_session_profile.reset(token)
-        with _at(T0 + 1):
-            assert session_marks.admit("fp-new", "alice", WINDOW) is True
-            assert session_marks.labels("fp-new") is None
-
-    def test_a_flood_of_admissions_reaches_no_other_profile(self) -> None:
-        """Review finding 3: unknown admissions lived in ``_marks``, so a flood
-        of initializes from a marked profile widened the gateway-wide window
-        and every other profile's clean session read None."""
-        _marked("alice")
-        with _at(T0 + 60):
-            session_marks.admit("fp-bob", "bob", WINDOW)
-            session_marks.mark("fp-carol", L.CREDENTIAL_SEEN, "carol")
-            with patch.object(session_marks, "MAX_MARKS", 3):
-                for i in range(10):
-                    session_marks.admit(f"fp-flood-{i}", "alice", WINDOW)
-            assert session_marks.labels("fp-bob") == frozenset()
-            assert session_marks.labels("fp-carol") == {L.CREDENTIAL_SEEN}
-            assert session_marks.labels("fp-marked-alice") == {L.FLAGGED_DELIVERY}
-
-    def test_an_admission_dropped_by_a_flood_stays_unknown_for_its_profile(self) -> None:
-        _marked("alice")
-        with _at(T0 + 60), patch.object(session_marks, "MAX_MARKS", 3):
-            for i in range(10):
-                session_marks.admit(f"fp-flood-{i}", "alice", WINDOW)
-            assert "fp-flood-0" not in session_marks._admitted
-            token = current_session_profile.set("alice")
-            try:
-                assert session_marks.labels("fp-flood-0") is None
-            finally:
-                current_session_profile.reset(token)
-            token = current_session_profile.set("bob")
-            try:
-                assert session_marks.labels("fp-bob-unrelated") == frozenset()
-            finally:
-                current_session_profile.reset(token)
-
-
-def _client(profile: Profile) -> tuple[SessionRegistry, TestClient]:
-    sessions = SessionRegistry(session_ttl=300.0, max_sessions_per_profile=10)
-    return sessions, TestClient(gateway_app({profile.name: profile}, sessions=sessions))
-
-
-def _auth(profile: Profile) -> dict[str, str]:
-    return {"Authorization": f"Bearer {profile.name}-token"}
-
-
 _OK = {"jsonrpc": "2.0", "id": 1, "result": {}}
 
 
-class TestGatewayAdmits:
-    """Every way a session comes into being passes through ``admit``."""
+class TestThroughTheGateway:
+    """What the gatekeeper sees: the labels read inside a real request."""
 
-    def _initialize(self, client: TestClient, profile: Profile, **headers: str) -> str:
-        with patch("trentina.gateway.app.route_jsonrpc", AsyncMock(return_value=_OK)):
-            resp = client.post(
-                f"/{profile.name}/mcp",
-                json={"jsonrpc": "2.0", "id": 1, "method": "initialize"},
-                headers={**_auth(profile), **headers},
-            )
-        assert resp.status_code == 200
-        return str(resp.headers[MCP_SESSION_ID_HEADER])
-
-    def test_initialize_in_the_window_is_unknown(self) -> None:
-        profile = _profile()
-        _sessions, client = _client(profile)
-        old = self._initialize(client, profile)
-        session_marks.mark(session_fingerprint(old), L.TRIPPED, "alice")
-
-        new = self._initialize(client, profile)
-        assert session_marks.labels(session_fingerprint(new)) is None
-        # Re-initializing over a stale header is the same mint.
-        again = self._initialize(client, profile, **{MCP_SESSION_ID_HEADER: "cd" * 16})
-        assert session_marks.labels(session_fingerprint(again)) is None
-
-    def test_initialize_with_no_mark_is_clean(self) -> None:
-        profile = _profile()
-        _sessions, client = _client(profile)
-        new = self._initialize(client, profile)
-        assert session_marks.labels(session_fingerprint(new)) == frozenset()
-
-    def test_initialize_with_the_cooldown_off_is_clean(self) -> None:
-        profile = _profile(cooldown=0)
-        _sessions, client = _client(profile)
-        old = self._initialize(client, profile)
-        session_marks.mark(session_fingerprint(old), L.TRIPPED, "alice")
-        new = self._initialize(client, profile)
-        assert session_marks.labels(session_fingerprint(new)) == frozenset()
-
-    def test_an_existing_session_keeps_reading_clean(self) -> None:
-        profile = _profile()
-        _sessions, client = _client(profile)
-        bystander = self._initialize(client, profile)
-        marked = self._initialize(client, profile)
-        session_marks.mark(session_fingerprint(marked), L.FLAGGED_DELIVERY, "alice")
-        assert session_marks.labels(session_fingerprint(bystander)) == frozenset()
-
-    def test_another_profile_initializes_clean(self) -> None:
-        alice, bob = _profile("alice"), _profile("bob")
+    @staticmethod
+    def _client(*profiles: Profile) -> TestClient:
         sessions = SessionRegistry(session_ttl=300.0, max_sessions_per_profile=10)
-        client = TestClient(gateway_app({"alice": alice, "bob": bob}, sessions=sessions))
-        marked = self._initialize(client, alice)
-        session_marks.mark(session_fingerprint(marked), L.TRIPPED, "alice")
-        assert session_marks.labels(session_fingerprint(self._initialize(client, bob))) == (
-            frozenset()
-        )
+        return TestClient(gateway_app({p.name: p for p in profiles}, sessions=sessions))
 
-    def test_a_call_binds_its_sessions_profile(self) -> None:
-        """What finding 2's fix stands on: every mark inside a request knows
-        the profile without asking a table a DELETE can empty."""
-        profile = _profile()
-        _sessions, client = _client(profile)
-        sid = self._initialize(client, profile)
-        seen: list[str] = []
+    @staticmethod
+    def _call(client: TestClient, profile: Profile, sid: str | None = None) -> Any:
+        """One call; the session id, and the profile and labels it read."""
+        seen: list[Any] = []
 
-        async def route(_profile: Profile, _body: dict[str, Any]) -> dict[str, Any]:
-            seen.append(current_session_profile.get())
+        async def route(_bound: Profile, _body: dict[str, Any]) -> dict[str, Any]:
+            seen.append(
+                (current_session_profile.get(), session_marks.labels(current_session.get()))
+            )
             return _OK
 
+        headers = {"Authorization": f"Bearer {profile.name}-token"}
+        if sid is not None:
+            headers[MCP_SESSION_ID_HEADER] = sid
+        method = "initialize" if sid is None else "tools/list"
         with patch("trentina.gateway.app.route_jsonrpc", route):
-            client.post(
-                "/alice/mcp",
-                json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-                headers={**_auth(profile), MCP_SESSION_ID_HEADER: sid},
-            )
-        assert seen == ["alice"]
-
-    def test_a_post_adoption_in_the_window_is_unknown(self) -> None:
-        profile = _profile()
-        sessions, client = _client(profile)
-        marked = self._initialize(client, profile)
-        session_marks.mark(session_fingerprint(marked), L.CREDENTIAL_SEEN, "alice")
-        with patch("trentina.gateway.app.route_jsonrpc", AsyncMock(return_value=_OK)):
             resp = client.post(
-                "/alice/mcp",
-                json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-                headers={**_auth(profile), MCP_SESSION_ID_HEADER: FOREIGN},
+                f"/{profile.name}/mcp",
+                json={"jsonrpc": "2.0", "id": 1, "method": method},
+                headers=headers,
             )
         assert resp.status_code == 200
-        assert sessions.get_session(FOREIGN) is not None
-        assert session_marks.labels(session_fingerprint(FOREIGN)) is None
+        return resp.headers.get(MCP_SESSION_ID_HEADER, sid), seen[0]
 
-    @pytest.mark.asyncio
-    async def test_a_get_adoption_in_the_window_is_unknown(self) -> None:
-        profile = _profile()
-        sessions = SessionRegistry(session_ttl=300.0, max_sessions_per_profile=10)
-        marked = sessions.create_session("alice")
-        session_marks.admit(session_fingerprint(marked), "alice", WINDOW)
-        session_marks.mark(session_fingerprint(marked), L.TRIPPED, "alice")
-        request = Request(
-            {
-                "type": "http",
-                "method": "GET",
-                "path": "/alice/mcp",
-                "raw_path": b"/alice/mcp",
-                "query_string": b"",
-                "scheme": "http",
-                "http_version": "1.1",
-                "root_path": "",
-                "server": ("testserver", 80),
-                "client": ("127.0.0.1", 4242),
-                "state": {},
-                "headers": [
-                    (b"authorization", b"Bearer alice-token"),
-                    (b"mcp-session-id", FOREIGN.encode()),
-                ],
-                "path_params": {"profile": "alice"},
-            }
-        )
-        resp = await _handle_get(request, {"alice": profile}, sessions)
-        assert resp.status_code == 200
-        assert session_marks.labels(session_fingerprint(FOREIGN)) is None
+    def _marked(self, client: TestClient, profile: Profile) -> None:
+        sid, _ = self._call(client, profile)
+        session_marks.mark(session_fingerprint(sid), L.TRIPPED, profile.name)
+
+    def test_the_request_binds_its_profile(self) -> None:
+        alice = _profile()
+        client = self._client(alice)
+        sid, _ = self._call(client, alice)
+        _, (bound, read) = self._call(client, alice, sid)
+        assert bound == "alice"
+        assert read == frozenset()
+
+    def test_a_pre_opened_session_is_cooled_down(self) -> None:
+        alice = _profile()
+        client = self._client(alice)
+        spare, _ = self._call(client, alice)
+        self._marked(client, alice)
+        _, (_, read) = self._call(client, alice, spare)
+        assert read is None
+
+    def test_a_fresh_initialize_is_cooled_down(self) -> None:
+        alice = _profile()
+        client = self._client(alice)
+        self._marked(client, alice)
+        fresh, _ = self._call(client, alice)
+        _, (_, read) = self._call(client, alice, fresh)
+        assert read is None
+
+    def test_an_adopted_id_is_cooled_down(self) -> None:
+        alice = _profile()
+        client = self._client(alice)
+        self._marked(client, alice)
+        _, (_, read) = self._call(client, alice, FOREIGN)
+        assert read is None
+
+    def test_another_profile_is_unaffected(self) -> None:
+        alice, bob = _profile("alice"), _profile("bob")
+        client = self._client(alice, bob)
+        self._marked(client, alice)
+        sid, _ = self._call(client, bob)
+        _, (_, read) = self._call(client, bob, sid)
+        assert read == frozenset()
+
+    def test_with_the_cooldown_off_nothing_else_is_affected(self) -> None:
+        alice = _profile(cooldown=0)
+        client = self._client(alice)
+        spare, _ = self._call(client, alice)
+        self._marked(client, alice)
+        _, (_, read) = self._call(client, alice, spare)
+        assert read == frozenset()
 
 
 class TestConfig:

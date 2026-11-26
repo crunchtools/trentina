@@ -40,7 +40,6 @@ from .context import (
     current_origin,
     current_select,
     current_session,
-    current_session_profile,
     session_fingerprint,
 )
 from .errors import (
@@ -543,8 +542,6 @@ async def _handle_get(
         # gateway restart left it retrying forever with no tools. Its token was
         # checked above; adopt the id it is already using.
         session = sessions.adopt(session_id, profile_name)
-        if session is not None:
-            _admit(session_id, profile)
     if session is None:
         logger.warning(
             "gateway: SSE stream rejected — session=%s profile=%s not found: %s [%s]",
@@ -650,17 +647,6 @@ async def _handle_delete(
     return Response(status_code=204)
 
 
-def _admit(session_id: str, profile: Profile) -> None:
-    """Tell ``session_marks`` a session is new to this process (#900).
-
-    Every mint and every adoption calls this, so a fresh session of a profile
-    marked within its cool-down starts unknown rather than clean.
-    """
-    session_marks.admit(
-        session_fingerprint(session_id), profile.name, profile.session_mark_cooldown_seconds
-    )
-
-
 def _resolve_session(
     request: Request,
     sessions: SessionRegistry,
@@ -698,8 +684,6 @@ def _resolve_session(
         # Same as the GET (#775): the caller's token was checked above, so an
         # id this process never issued is adopted rather than refused.
         session = sessions.adopt(session_id, profile_name)
-        if session is not None:
-            _admit(session_id, profile)
 
     if session is None:
         logger.warning(
@@ -777,7 +761,7 @@ async def _handle_post(
     # Each request is its own task, so the binding ends with it. The id is a
     # bearer of the session: only its fingerprint reaches the audit.
     current_session.set(session_fingerprint(session_id))
-    current_session_profile.set(profile_name)
+    session_marks.bind(profile_name, profile.session_mark_cooldown_seconds)
     # Unconditionally, from this request's own state (#592, C2): a federated
     # request carries (peer, sub); every other — including a static-bearer call
     # to a federation profile — lands None, never a value left by a reused task.
@@ -839,7 +823,6 @@ async def _handle_post(
     method = body.get("method", "")
     if method == "initialize":
         new_session_id = sessions.create_session(profile_name)
-        _admit(new_session_id, profile)
         headers[MCP_SESSION_ID_HEADER] = new_session_id
         logger.info(
             "gateway: initialize session=%s profile=%s [%s]",
