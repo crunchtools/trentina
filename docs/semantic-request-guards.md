@@ -116,6 +116,7 @@ profiles:
         tools_allow: [search_messages, get_message, draft_message, send_message]
         destination_params:
           send_message: to        # so the gatekeeper can tell a first contact
+    session_mark_cooldown_seconds: 1800  # optional; 0 off (#900)
     semantic_request_guards:
       policy: |
         Replies go only to the person who wrote the thread being answered.
@@ -193,12 +194,6 @@ this one, and a label stays on the session that earned it. `0` turns the
 cool-down off; the ceiling is 86400. It is perimeter: an agent's own
 `reload_profiles` cannot change it, and a federation ingress carries its
 source's. Held in memory, like the labels, so a gateway restart forgets both.
-
-```yaml
-profiles:
-  swarm-worker:
-    session_mark_cooldown_seconds: 1800   # 0 = off
-```
 
 The first mark on a session is logged once, with the `call_ref` of the call
 whose response carried the flag, so the audit row that tainted it can be
