@@ -11,6 +11,7 @@ under that name.
 ## [Unreleased]
 
 ### Security
+- **Starting a session over no longer sheds its labels (#900, a954).** Session labels (`flagged_delivery`, `tripped`, `credential_seen`) are keyed by the session, so an agent could drop them by re-initializing with no or a stale session header, or by presenting a well-formed id the gateway never issued and having it adopted; either read clean. A profile now has `session_mark_cooldown_seconds` (default 1800, 0 off, at most 86400): for that long after any of its sessions is labelled, a session newly minted or adopted for it starts unknown, which `refuse_when` and `refuse_when_flagged` already refuse. Existing sessions are untouched and marks stay per session. The field is perimeter (held on an agent's own reload) and carried to a federation ingress. The `sessions.adopt` docstring no longer claims adoption launders nothing.
 - The image builds OpenCV 5.1.0 from hash-pinned source with only core,
   imgproc and imgcodecs, in place of the opencv-python-headless wheel, whose
   bundled FFmpeg 9.0.2 carried CVE-2026-135736 and CVE-2026-135743 (critical)

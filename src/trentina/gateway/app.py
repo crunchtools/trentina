@@ -32,6 +32,7 @@ from ..logsafe import exc_kind, exc_where, redact_source, safe_address
 from ..quarantine.classifier import classifier_status
 from ..transports.jsonrpc import JSONRPC_INTERNAL_ERROR
 from ..transports.mcp import route_jsonrpc
+from . import session_marks
 from .auth import verify_bearer, verify_oauth, verify_primary_jwt_header
 from .context import (
     current_caller,
@@ -541,6 +542,8 @@ async def _handle_get(
         # gateway restart left it retrying forever with no tools. Its token was
         # checked above; adopt the id it is already using.
         session = sessions.adopt(session_id, profile_name)
+        if session is not None:
+            _admit(session_id, profile)
     if session is None:
         logger.warning(
             "gateway: SSE stream rejected — session=%s profile=%s not found: %s [%s]",
@@ -646,10 +649,21 @@ async def _handle_delete(
     return Response(status_code=204)
 
 
+def _admit(session_id: str, profile: Profile) -> None:
+    """Tell ``session_marks`` a session is new to this process (#900).
+
+    Every mint and every adoption calls this, so a fresh session of a profile
+    marked within its cool-down starts unknown rather than clean.
+    """
+    session_marks.admit(
+        session_fingerprint(session_id), profile.name, profile.session_mark_cooldown_seconds
+    )
+
+
 def _resolve_session(
     request: Request,
     sessions: SessionRegistry,
-    profile_name: str,
+    profile: Profile,
     body: dict[str, Any],
 ) -> tuple[str, Response | None]:
     """Settle which session this POST belongs to, or refuse it.
@@ -658,6 +672,7 @@ def _resolve_session(
     that is re-initializing) and a response when the request must be refused.
     Runs only after :func:`_authorize` has passed.
     """
+    profile_name = profile.name
     session_id = request.headers.get(MCP_SESSION_ID_HEADER, "")
     if not session_id:
         return "", None
@@ -682,6 +697,8 @@ def _resolve_session(
         # Same as the GET (#775): the caller's token was checked above, so an
         # id this process never issued is adopted rather than refused.
         session = sessions.adopt(session_id, profile_name)
+        if session is not None:
+            _admit(session_id, profile)
 
     if session is None:
         logger.warning(
@@ -752,7 +769,7 @@ async def _handle_post(
     if not isinstance(body, dict):
         return _plain(400, "Bad Request: JSON-RPC body must be an object")
 
-    session_id, refusal = _resolve_session(request, sessions, profile_name, body)
+    session_id, refusal = _resolve_session(request, sessions, profile, body)
     if refusal is not None:
         return refusal
 
@@ -820,6 +837,7 @@ async def _handle_post(
     method = body.get("method", "")
     if method == "initialize":
         new_session_id = sessions.create_session(profile_name)
+        _admit(new_session_id, profile)
         headers[MCP_SESSION_ID_HEADER] = new_session_id
         logger.info(
             "gateway: initialize session=%s profile=%s [%s]",

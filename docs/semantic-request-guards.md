@@ -169,7 +169,36 @@ Turn it on for profiles that run unattended: a swarm or coding agent that reads
 mail, tickets or web pages and nobody watches. Leave it off for an assistant
 a person talks to. Those read flagged content routinely, often because the
 person asked them to read about an attack, and would lose their guarded tools
-for the rest of the session. A new session starts clean.
+for the rest of the session.
+
+### Starting over does not shed a label
+
+Labels belong to a session, and a session is whatever ID the client presents,
+so an agent could shed its labels by starting over: send `initialize` with no
+or a stale session header and get a new session, or present any well-formed ID
+the gateway never issued and have it adopted. Each would read clean (#900).
+
+So a profile has a cool-down. For `session_mark_cooldown_seconds` (default
+1800, 30 minutes) after any session of the profile is labelled, a session newly
+minted or adopted for that profile starts **unknown**, the same state as a
+client that sends no session ID: `refuse_when` and `refuse_when_flagged` refuse
+its guarded calls with `session_flagged`, and the judge is told the session is
+unknown. When the window passes the new session reads clean, unless it has been
+labelled itself. Each later label restarts the window for sessions admitted
+after it.
+
+Only new sessions are affected. A session that already existed keeps its own
+labels, so a person's other seat on the same profile is untouched by a mark on
+this one, and a label stays on the session that earned it. `0` turns the
+cool-down off; the ceiling is 86400. It is perimeter: an agent's own
+`reload_profiles` cannot change it, and a federation ingress carries its
+source's. Held in memory, like the labels, so a gateway restart forgets both.
+
+```yaml
+profiles:
+  swarm-worker:
+    session_mark_cooldown_seconds: 1800   # 0 = off
+```
 
 The first mark on a session is logged once, with the `call_ref` of the call
 whose response carried the flag, so the audit row that tainted it can be

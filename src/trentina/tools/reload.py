@@ -456,14 +456,12 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         if old != getattr(after.defense, field_name):
             setattr(after.defense, field_name, old)
             held.append(f"defense.{field_name}")
-    # Seven blocks are perimeter end to end, held whole: the bridge's plaintext
-    # side (#162), where the client may be tunnelled (#442), which repos it may
-    # push to (#453), which HTTP destinations it may reach (#511), which calls
-    # and responses a gatekeeper judges (#456), and which federated peers may
-    # authenticate — a key an agent adds could mint any caller (#592). llm_keys
-    # is not held and git/egress_http are: a key buys model calls, one more
-    # pattern is one more place a talked-round agent can send to. route_grants
-    # are the same kind of grant on a forward or plugin route (#535): held whole.
+    # Perimeter end to end, held whole: the bridge's plaintext side (#162),
+    # tunnelling (#442), push repos (#453), HTTP destinations (#511), route
+    # grants (#535), what a gatekeeper judges (#456) and the session cool-down
+    # that keeps a fresh session from shedding its labels (#900), and federated
+    # peers, since a key an agent adds could mint any caller (#592). llm_keys is
+    # not held: a key buys model calls, a grant one more place to send to.
     for block in (
         "matrix_bridge",
         "client_egress",
@@ -472,6 +470,7 @@ def _hold_perimeter_fields(before: Profile, after: Profile) -> list[str]:
         "route_grants",
         "semantic_request_guards",
         "semantic_response_guards",
+        "session_mark_cooldown_seconds",
         "federation",
     ):
         if getattr(after, block) != getattr(before, block):

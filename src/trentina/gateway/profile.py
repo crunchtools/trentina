@@ -2467,6 +2467,11 @@ class SemanticGuardsConfig(BaseModel):
         return upstream in self.egress_http
 
 
+SESSION_MARK_COOLDOWN_DEFAULT = 1800.0
+"""Seconds a fresh session of a marked profile starts unknown (#900)."""
+SESSION_MARK_COOLDOWN_MAX = 86400.0
+
+
 DISCOVERY_TOOLS = frozenset({"find_tools", "call_tool", "load_tools"})
 """The gateway's own discovery tools (#473), served only under ``tool_discovery``."""
 TOP_K_DEFAULT = 8
@@ -3747,6 +3752,18 @@ class Profile(BaseModel):
         description=(
             "Grants on forward and dist: route instances, written as the "
             "profile's proxies: entries for them (#535). Never a key in the file."
+        ),
+    )
+    session_mark_cooldown_seconds: float = Field(
+        default=SESSION_MARK_COOLDOWN_DEFAULT,
+        ge=0,
+        le=SESSION_MARK_COOLDOWN_MAX,
+        description=(
+            "For this long after any session of the profile is labelled "
+            "(``flagged_delivery``, ``tripped``, ``credential_seen``), a session "
+            "newly minted or adopted for the profile starts unknown, so "
+            "``refuse_when`` refuses it until the window passes (#900). Starting "
+            "over must not shed a label. 0 turns it off."
         ),
     )
     semantic_request_guards: SemanticGuardsConfig | None = Field(

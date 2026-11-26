@@ -21,6 +21,16 @@ A dropped entry must not read as a clean session, or a flood of marked
 sessions would launder an older one. So until every dropped entry would have
 expired anyway, a session with no entry is unknown (None) rather than clean:
 the judge is told so, and ``refuse_when`` refuses it (#457).
+
+Nor may a fresh session launder a marked one (#900). An agent sheds its
+labels by starting over: ``initialize`` mints a new session, and an id this
+process never issued is adopted (``sessions.adopt``), and either way the
+fingerprint is new and reads clean. So the gateway remembers which profile
+owns each session (:func:`admit`) and when that profile last had any session
+marked. For the profile's ``session_mark_cooldown_seconds`` after that mark,
+a session newly minted or adopted for it starts unknown (None), and
+``refuse_when`` refuses it until the window passes. Sessions that already
+existed keep their own labels: a mark on one session never touches another.
 """
 
 from __future__ import annotations
@@ -75,6 +85,10 @@ class _Entry:
 _marks: OrderedDict[str, _Entry] = OrderedDict()
 _unknown_until = 0.0
 """Monotonic time before which a session with no entry may be one we dropped."""
+_owners: dict[str, str] = {}
+"""Session fingerprint to the profile it was admitted for, while it is live."""
+_profile_marked: dict[str, float] = {}
+"""Profile name to the monotonic time any of its sessions was last marked."""
 
 
 def mark(session: str, label: SessionLabel) -> bool:
@@ -83,17 +97,55 @@ def mark(session: str, label: SessionLabel) -> bool:
     Returns True when the label was not already live, so the caller can log
     the call that set it once rather than on every call after.
     """
-    global _unknown_until
     if not session:
         return False
     current = labels(session)
     first = current is None or label not in current
     now = time.monotonic()
+    owner = _owners.get(session)
+    if owner is not None:
+        _profile_marked[owner] = now
     # A session evicted by a flood and labelled again must not read as having
     # only its new label: its dropped ones may have refused it. A window
     # already past reads as known, so it needs no special case.
     _marks.setdefault(session, _Entry(unknown_until=_unknown_until)).labels[label] = now
     _marks.move_to_end(session)
+    _trim(now)
+    return first
+
+
+def admit(session: str, profile: str, cooldown_seconds: float) -> bool:
+    """Register a session newly minted or adopted for *profile* (#900).
+
+    Within *cooldown_seconds* of the last mark on any of the profile's
+    sessions, the new session starts unknown until that window passes, so
+    starting over does not shed a label. 0 turns it off. Returns True when
+    the session starts unknown.
+    """
+    if not session:
+        return False
+    _owners[session] = profile
+    marked = _profile_marked.get(profile)
+    now = time.monotonic()
+    if cooldown_seconds <= 0 or marked is None or now >= marked + cooldown_seconds:
+        return False
+    entry = _marks.setdefault(session, _Entry())
+    entry.unknown_until = max(entry.unknown_until, marked + cooldown_seconds)
+    _marks.move_to_end(session)
+    _trim(now)
+    logger.info(
+        "gateway: session %s… admitted unknown for profile=%s, marked %.0fs ago (cool-down %.0fs)",
+        session[:8],
+        profile,
+        now - marked,
+        cooldown_seconds,
+    )
+    return True
+
+
+def _trim(now: float) -> None:
+    """Drop the oldest entries down to ``MAX_MARKS``, widening the unknown window."""
+    global _unknown_until
     while len(_marks) > MAX_MARKS:
         _, dropped = _marks.popitem(last=False)
         if _unknown_until <= now:
@@ -102,8 +154,15 @@ def mark(session: str, label: SessionLabel) -> bool:
                 "sessions read as unknown until the dropped marks expire",
                 MAX_MARKS,
             )
-        _unknown_until = max(_unknown_until, max(dropped.labels.values()) + MARK_TTL_SECONDS)
-    return first
+        # An entry admitted unknown (#900) may hold no label yet; its own
+        # window must outlive the drop all the same.
+        expires = max(dropped.labels.values()) + MARK_TTL_SECONDS if dropped.labels else 0.0
+        _unknown_until = max(_unknown_until, expires, dropped.unknown_until)
+
+
+def forget(session: str) -> None:
+    """Drop *session*'s owner when it ends. Its labels stay until they expire."""
+    _owners.pop(session, None)
 
 
 def labels(session: str) -> frozenset[SessionLabel] | None:
@@ -137,6 +196,8 @@ def clear() -> None:
     """Forget every mark. For tests."""
     global _unknown_until
     _marks.clear()
+    _owners.clear()
+    _profile_marked.clear()
     _unknown_until = 0.0
 
 
