@@ -1278,6 +1278,13 @@ symbol = "_profile"
 justification = "Not single-use: _profile is called at test_field_select.py:125 (the default in _call), :238 (the guarded profile) and :269 (the instructions test). The check appears to count only the call whose result is assigned to a name, not one inside an `or` or passed as an argument."
 classification = "gourmand_bug"
 
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/gateway/session_marks.py"
+pattern = "clear"
+justification = "A test reset of this module's own state (three table clears and the unknown-window reset, #900); verdict_cache.reset_verdict_cache resets different tables in the same shape"
+classification = "by_design"
+
 # --- spec 027: git packs and the judging of what they hold ---
 
 [[exceptions]]
@@ -1331,7 +1338,7 @@ classification = "gourmand_bug"
 check = "copy_paste_detection"
 path = "src/trentina/unpack/alphabets.py"
 item = "decode_base2048"
-justification = "decode_base2048 decodes Base2048 text; it is reported as matching functions in discovery.py, session_marks.py and (since spec 027) git_chunks.py, which share only a lookup-then-loop-then-build shape. Structural collision, not duplication."
+justification = "decode_base2048 decodes Base2048 text; it is reported as matching functions in discovery.py, paging, session_marks._open_window (#900, which opens or extends a profile's cool-down) and (since spec 027) git_chunks.py, which share only a guard-then-branch-then-store, lookup-then-loop-then-build shape. The discovery side is already excepted for the same reason. Structural collision, not duplication."
 classification = "gourmand_bug"
 
 [[exceptions]]

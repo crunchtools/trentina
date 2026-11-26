@@ -32,6 +32,7 @@ from ..logsafe import exc_kind, exc_where, redact_source, safe_address
 from ..quarantine.classifier import classifier_status
 from ..transports.jsonrpc import JSONRPC_INTERNAL_ERROR
 from ..transports.mcp import route_jsonrpc
+from . import session_marks
 from .auth import verify_bearer, verify_oauth, verify_primary_jwt_header
 from .context import (
     current_caller,
@@ -649,7 +650,7 @@ async def _handle_delete(
 def _resolve_session(
     request: Request,
     sessions: SessionRegistry,
-    profile_name: str,
+    profile: Profile,
     body: dict[str, Any],
 ) -> tuple[str, Response | None]:
     """Settle which session this POST belongs to, or refuse it.
@@ -658,6 +659,7 @@ def _resolve_session(
     that is re-initializing) and a response when the request must be refused.
     Runs only after :func:`_authorize` has passed.
     """
+    profile_name = profile.name
     session_id = request.headers.get(MCP_SESSION_ID_HEADER, "")
     if not session_id:
         return "", None
@@ -752,13 +754,14 @@ async def _handle_post(
     if not isinstance(body, dict):
         return _plain(400, "Bad Request: JSON-RPC body must be an object")
 
-    session_id, refusal = _resolve_session(request, sessions, profile_name, body)
+    session_id, refusal = _resolve_session(request, sessions, profile, body)
     if refusal is not None:
         return refusal
 
     # Each request is its own task, so the binding ends with it. The id is a
     # bearer of the session: only its fingerprint reaches the audit.
     current_session.set(session_fingerprint(session_id))
+    session_marks.bind(profile_name, profile.session_mark_cooldown_seconds, profile.refusing_labels)
     # Unconditionally, from this request's own state (#592, C2): a federated
     # request carries (peer, sub); every other — including a static-bearer call
     # to a federation profile — lands None, never a value left by a reused task.

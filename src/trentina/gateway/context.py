@@ -53,6 +53,11 @@ _current_parts: ContextVar[PartsOffer | None] = ContextVar("current_parts_offer"
 # sends no session header.
 current_session: ContextVar[str] = ContextVar("current_session", default="")
 current_call: ContextVar[str] = ContextVar("current_call", default="")
+# The profile the request's session belongs to, bound beside
+# ``current_session`` by ``session_marks.bind`` (#900): a label opens its
+# profile's cool-down from here, and a read checks it, with no per-session
+# table a teardown or a flood could empty first.
+current_session_profile: ContextVar[str] = ContextVar("current_session_profile", default="")
 # The real caller behind a federated request (#592, C2): the (peer, sub) an
 # primary JWT carried — the primary peer whose key VERIFIED (the actor) and the
 # caller it ASSERTS. None for every non-federated request. Set beside

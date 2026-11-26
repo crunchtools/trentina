@@ -2642,7 +2642,7 @@ wheels = [
 
 [[package]]
 name = "trentina"
-version = "6.31.0"
+version = "6.32.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -2690,6 +2690,9 @@ matrix = [
 browser = [
     { name = "playwright" },
 ]
+opencv-build = [
+    { name = "numpy" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -2729,6 +2732,7 @@ provides-extras = ["matrix", "bridge", "dev"]
 
 [package.metadata.requires-dev]
 browser = [{ name = "playwright", specifier = "==1.65.1" }]
+opencv-build = [{ name = "numpy", specifier = ">=1.24" }]
 
 [[package]]
 name = "truststore"

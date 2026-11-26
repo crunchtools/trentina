@@ -208,9 +208,14 @@ class SessionRegistry:
         What it does not carry over: the tools the previous process had loaded
         for this session (``discovery._loaded`` is in-memory), which is why a
         ``list_changed`` is queued for :meth:`subscribe` to drain; and the
-        session's flag marks (``session_marks`` is in-memory too, and after a
-        restart an unmarked session reads clean whether it re-initializes or is
-        adopted, so adoption launders nothing).
+        session's labels (``session_marks``).  A fingerprint the marks table has
+        never seen reads clean, so adoption, like a fresh ``initialize``, is a
+        way to shed them: an agent can present any well-formed id.  What stops
+        that is the profile's cool-down (#900): within
+        ``session_mark_cooldown_seconds`` of a mark on any session of the
+        profile, every other session of it, an adopted one included, reads
+        unknown, which ``refuse_when`` refuses.  A restart forgets the marks
+        and the cool-down alike.
         """
         if SESSION_ID_RE.match(session_id) is None:
             return None
