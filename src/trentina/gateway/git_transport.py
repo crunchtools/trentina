@@ -71,7 +71,15 @@ from ..transports.base import (
 )
 from ..transports.perimeter import InTree
 from .destination import MAX_DESTINATION_CHARS
-from .git_fetch import Fetch, at_tips, enter_lane, relay_fetch, relay_listing, relay_push
+from .git_fetch import (
+    Fetch,
+    at_tips,
+    enter_lane,
+    relay_fetch,
+    relay_listing,
+    relay_push,
+    resolve_refs,
+)
 from .git_wire import (
     FLUSH,
     INFO_REFS,
@@ -96,6 +104,7 @@ from .git_wire import (
     parse_repo_path,
     refuse_ref_update,
     strip_fetch_request,
+    want_refs,
     wants,
 )
 from .proxy_utils import PLAIN_TEXT
@@ -287,7 +296,16 @@ class GitRoute(Route[GitAdmitted, InTree]):
             else:
                 negotiation = await _negotiation(ctx.stream(), admitted)
                 content = negotiation.body
-        if negotiation is not None and negotiation.wants:
+        if negotiation is not None and negotiation.want_refs:
+            # A want-ref names a ref, not an object: the judge and the object
+            # format need the oids the listing gave those names.
+            known = set(negotiation.wants)
+            seen = resolve_refs(ctx.profile.name, admitted.path.slug, negotiation.want_refs)
+            negotiation = replace(
+                negotiation,
+                wants=[*negotiation.wants, *(oid for oid in seen if oid not in known)],
+            )
+        if negotiation is not None and (negotiation.wants or negotiation.want_refs):
             # A judged fetch waits for its lane before the forge is asked, and
             # gives it back when the operation finishes, however it ends.
             if negotiation.promisor and at_tips(
@@ -386,6 +404,7 @@ class Negotiation:
     wants: list[str]
     promisor: bool
     cold: bool = False
+    want_refs: list[str] = field(default_factory=list)
 
     @property
     def object_format(self) -> str:
@@ -437,11 +456,16 @@ def _admit_negotiation(arrived: bytes, admitted: GitAdmitted) -> Negotiation:
         wanted = [] if lists_refs else wants(body, admitted.protocol)
     except ValueError:
         raise GitRefusedError(HTTPStatus.BAD_REQUEST, "malformed") from None
-    if wanted and not negotiated_sideband(body, admitted.protocol):
+    try:
+        named = [] if lists_refs else want_refs(body, admitted.protocol)
+    except ValueError:
+        raise GitRefusedError(HTTPStatus.BAD_REQUEST, "malformed") from None
+    asked = bool(wanted or named)
+    if asked and not negotiated_sideband(body, admitted.protocol):
         raise GitRefusedError(HTTPStatus.BAD_REQUEST, "sideband")
-    promisor = bool(wanted) and is_promisor_fetch(body, admitted.protocol)
-    cold = not promisor and bool(wanted) and is_cold_fetch(body, admitted.protocol)
-    return Negotiation(body, lists_refs, wanted, promisor, cold)
+    promisor = asked and is_promisor_fetch(body, admitted.protocol)
+    cold = not promisor and asked and is_cold_fetch(body, admitted.protocol)
+    return Negotiation(body, lists_refs, wanted, promisor, cold, named)
 
 
 async def _negotiation(stream: AsyncIterator[bytes], admitted: GitAdmitted) -> Negotiation:

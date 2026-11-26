@@ -24,6 +24,7 @@ from trentina.gateway.git_wire import (
     check_upload_request,
     is_cold_fetch,
     is_promisor_fetch,
+    listed_refs,
     listed_tips,
     negotiated_sideband,
     parse_command,
@@ -37,6 +38,7 @@ from trentina.gateway.git_wire import (
     rewrite_push_status,
     sideband_line,
     strip_fetch_request,
+    want_refs,
     wants,
 )
 from trentina.outcomes import Outcome
@@ -578,6 +580,43 @@ class TestRequestReading:
         v0 = pkt(b"want " + ONE + b" side-band-64k filter\n") + pkt(b"filter blob:none\n")
         assert is_promisor_fetch(v0 + b"0000", None)
         assert not is_promisor_fetch(pkt(b"want " + ONE + EOL) + b"0000", None)
+
+    def test_want_refs_are_the_v2_want_ref_names_in_order(self) -> None:
+        body = _fetch_v2(b"want-ref refs/heads/main", b"want " + ONE, b"want-ref refs/tags/v1")
+        assert want_refs(body, V2) == ["refs/heads/main", "refs/tags/v1"]
+        assert want_refs(pkt(b"want-ref refs/heads/main\n") + b"0000", None) == []
+        assert want_refs(_fetch_v2(b"want " + ONE), V2) == []
+
+    @pytest.mark.parametrize("line", [b"want-ref ", b"want-ref \xff\xfe"])
+    def test_a_malformed_want_ref_is_an_error(self, line: bytes) -> None:
+        with pytest.raises(ValueError, match="want-ref"):
+            want_refs(_fetch_v2(line), V2)
+
+    def test_a_want_ref_counts_as_a_want_for_a_cold_fetch(self) -> None:
+        assert is_cold_fetch(_fetch_v2(b"want-ref refs/heads/main", b"done"), V2)
+        assert not is_cold_fetch(
+            _fetch_v2(b"want-ref refs/heads/main", b"have " + TWO, b"done"), V2
+        )
+
+    def test_a_filtered_want_ref_fetch_is_not_a_lazy_fetch(self) -> None:
+        body = _fetch_v2(b"filter blob:none", b"want-ref refs/heads/main", b"done")
+        assert not is_promisor_fetch(body, V2)
+        assert is_cold_fetch(body, V2)
+
+    def test_the_listed_refs_are_each_names_object_and_not_the_peeled_one(self) -> None:
+        listing = (
+            pkt(ONE + b" HEAD\0multi_ack symref=HEAD:refs/heads/main\n")
+            + pkt(ONE + b" refs/heads/main\n")
+            + pkt(TWO + b" refs/tags/v1 peeled:" + ONE + b"\n")
+            + b"0000"
+        )
+        assert listed_refs(listing) == {
+            "HEAD": ONE.decode(),
+            "refs/heads/main": ONE.decode(),
+            "refs/tags/v1": TWO.decode(),
+        }
+        empty = pkt(ZERO + b" capabilities^{}\0multi_ack\n") + b"0000"
+        assert listed_refs(empty) == {}
 
     def test_the_listed_tips_are_each_refs_and_each_peeled_tags_object(self) -> None:
         v2 = pkt(b"%s refs/heads/main symref-target:x\n" % ONE) + pkt(

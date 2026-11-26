@@ -500,6 +500,11 @@ class GitJudge:
         self._trees.clear()
         self._tree_bytes = 0
 
+    def abandon(self) -> None:
+        """Stop judging now: what is still out is never judged or cached."""
+        if self._task is not None:
+            self._task.cancel()
+
     def full(self) -> bool:
         """True once ``MAX_TRACKED_OBJECTS`` are tracked: no more may be submitted."""
         return len(self._objects) >= MAX_TRACKED_OBJECTS

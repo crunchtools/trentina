@@ -97,3 +97,23 @@ def test_the_remembered_tips_are_bounded_and_replaced_by_the_next_listing(
     git_fetch.remember_tips("p", "a/y", ["5"])
     assert git_fetch.at_tips("p", "a/y", ["5"]) and not git_fetch.at_tips("p", "a/y", ["3"])
     assert git_fetch._tips_held == 1
+
+
+def test_remembered_ref_names_resolve_and_count_against_the_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(git_fetch, "_tips", OrderedDict())
+    monkeypatch.setattr(git_fetch, "_tips_held", 0)
+    monkeypatch.setattr(git_fetch, "MAX_TIPS", 4)
+    refs = {"refs/heads/main": "1", "refs/tags/v1": "2"}
+    git_fetch.remember_tips("p", "a/x", ["1", "2"], refs=refs)
+    assert git_fetch.resolve_refs("p", "a/x", ["refs/tags/v1", "nope", "refs/heads/main"]) == [
+        "2",
+        "1",
+    ]
+    assert git_fetch.at_tips("p", "a/x", ["2"])
+    assert git_fetch.resolve_refs("q", "a/x", ["refs/heads/main"]) == []
+    assert git_fetch._tips_held == 4, "names count as well as oids"
+    git_fetch.remember_tips("p", "a/y", ["3"], refs={"refs/heads/main": "3"})
+    assert git_fetch.resolve_refs("p", "a/x", ["refs/heads/main"]) == [], "the oldest went"
+    assert git_fetch._tips_held == 2
