@@ -65,7 +65,15 @@ _HASH_LEN = {"sha1": 20, "sha256": 32}
 _PACK_HEADER = 12
 _MAX_VARINT_BYTES = 10
 _COPY_ZERO = 0x10000
+_INFLATE_STEP = 1024 * 1024
+"""Most output one ``decompress`` call is asked for, so an object is never
+held twice while it grows."""
 _HEAD, _ENTRY, _BODY, _TAIL = range(4)
+
+
+Payload = bytes | bytearray
+"""An object's bytes. The reader hands on the buffer it inflated into rather
+than copy it, so a consumer must not change what it is given."""
 
 
 class PackRefusedError(Exception):
@@ -96,7 +104,7 @@ class PackObject:
 
     oid: str
     kind: str
-    content: bytes
+    content: Payload
     offset: int
 
 
@@ -107,7 +115,7 @@ def _malformed(detail: str) -> PackRefusedError:
     return PackRefusedError("malformed", detail)
 
 
-def _varint(payload: bytes, pos: int) -> tuple[int, int]:
+def _varint(payload: Payload, pos: int) -> tuple[int, int]:
     """A little-endian base-128 number, as a delta header writes its sizes."""
     result = shift = 0
     while True:
@@ -121,7 +129,7 @@ def _varint(payload: bytes, pos: int) -> tuple[int, int]:
             return result, pos
 
 
-def _copy_args(delta: bytes, pos: int, op: int) -> tuple[int, int, int]:
+def _copy_args(delta: Payload, pos: int, op: int) -> tuple[int, int, int]:
     """Offset, size and next position of a copy op. A size of 0 means 0x10000."""
     if pos + bin(op & _VARINT_BITS).count("1") > len(delta):
         raise _malformed("delta copy")
@@ -137,7 +145,7 @@ def _copy_args(delta: bytes, pos: int, op: int) -> tuple[int, int, int]:
     return offset, size or _COPY_ZERO, pos
 
 
-def apply_delta(base: bytes, delta: bytes, pos: int, target: int) -> bytes:
+def apply_delta(base: Payload, delta: Payload, pos: int, target: int) -> bytearray:
     """Apply the ops of ``delta`` from ``pos`` (past its size header) to ``base``."""
     out = bytearray()
     while pos < len(delta):
@@ -159,7 +167,7 @@ def apply_delta(base: bytes, delta: bytes, pos: int, target: int) -> bytes:
             raise _malformed("delta result size")
     if len(out) != target:
         raise _malformed("delta result size")
-    return bytes(out)
+    return out
 
 
 # ---------------------------------------------------------------- entries
@@ -242,7 +250,7 @@ class _Pending:
     """A delta waiting for its base."""
 
     offset: int
-    delta: bytes
+    delta: Payload
     pos: int
     target: int
     source: int
@@ -250,11 +258,14 @@ class _Pending:
 
 @dataclass
 class _Slot:
-    """Where a resolved object's bytes are: in ``payload``, or in the spool file."""
+    """Where a resolved object's bytes are: in ``payload``, or in the spool file.
+
+    ``length`` is the object's size either way: what reading it costs.
+    """
 
     kind: str
     depth: int
-    payload: bytes | None
+    payload: Payload | None
     foff: int = 0
     length: int = 0
 
@@ -265,7 +276,7 @@ class _Resolved:
     oid: bytes
     kind: str
     depth: int
-    payload: bytes
+    payload: Payload
 
 
 class PackReader:
@@ -456,8 +467,11 @@ class PackReader:
         size = entry.head.size
         inflater, payload = entry.inflater, chunk
         while True:
+            # A step at a time: one call allowed the whole object would hand it back
+            # as a ``bytes`` and then copy it into ``entry.out``.
+            room = min(_INFLATE_STEP, size - len(entry.out) + 1)
             try:
-                got = inflater.decompress(payload, size - len(entry.out) + 1)
+                got = inflater.decompress(payload, room)
             except zlib.error:
                 raise _malformed("zlib stream") from None
             entry.out += got
@@ -465,11 +479,12 @@ class PackReader:
                 raise _malformed("entry size")
             if inflater.eof:
                 return len(inflater.unused_data)
-            payload = inflater.unconsumed_tail
-            if not payload:
-                return None
-            if not got and len(payload) == len(chunk):
+            tail = inflater.unconsumed_tail
+            if len(got) < room and not tail:
+                return None  # a call that did not fill its room has nothing pending
+            if not got and len(tail) == len(payload):
                 raise _malformed("zlib stalled")
+            payload = tail  # may be empty while output is still pending
 
     def _finish_entry(self, entry: _Entry, out: list[PackObject]) -> None:
         if len(entry.out) != entry.head.size:
@@ -477,7 +492,7 @@ class PackReader:
         self._cur = None
         self._read += 1
         self._state = _ENTRY if self._read < self._declared else _TAIL
-        payload = bytes(entry.out)
+        payload = entry.out
         if entry.head.code in _KINDS:
             self._settle(self._resolve(entry.offset, _KINDS[entry.head.code], 0, payload), out)
         else:
@@ -485,7 +500,7 @@ class PackReader:
 
     # ------------------------------------------------------------ deltas
 
-    def _on_delta(self, entry: _Entry, delta: bytes, out: list[PackObject]) -> None:
+    def _on_delta(self, entry: _Entry, delta: Payload, out: list[PackObject]) -> None:
         source, pos = _varint(delta, 0)
         target, pos = _varint(delta, pos)
         self._charge(target)
@@ -497,13 +512,14 @@ class PackReader:
             base_off = self._by_oid.get(head.base_oid, -1)
         slot = self._slots.get(base_off)
         if slot is not None:
+            self._charge(slot.length)  # a base read for each delta is paid for each time
             self._settle(self._apply(pending, slot, self._load(slot)), out)
         elif head.code == _OFS_DELTA:
             self._wait_off.setdefault(base_off, []).append(pending)
         else:
             self._wait_oid.setdefault(head.base_oid, []).append(pending)
 
-    def _apply(self, pending: _Pending, base: _Slot, base_data: bytes) -> _Resolved:
+    def _apply(self, pending: _Pending, base: _Slot, base_data: Payload) -> _Resolved:
         depth = base.depth + 1
         if depth > self._limits.max_depth:
             raise PackRefusedError("too_deep", "delta chain")
@@ -512,7 +528,7 @@ class PackReader:
         payload = apply_delta(base_data, pending.delta, pending.pos, pending.target)
         return self._resolve(pending.offset, base.kind, depth, payload)
 
-    def _resolve(self, offset: int, kind: str, depth: int, payload: bytes) -> _Resolved:
+    def _resolve(self, offset: int, kind: str, depth: int, payload: Payload) -> _Resolved:
         digest = hashlib.new(self._fmt, usedforsecurity=False)
         digest.update(f"{kind} {len(payload)}\0".encode("ascii"))
         digest.update(payload)
@@ -520,20 +536,23 @@ class PackReader:
 
     def _settle(self, first: _Resolved, out: list[PackObject]) -> None:
         """Record ``first`` and, from an explicit stack, every delta that was waiting on it."""
-        stack: list[tuple[_Slot, bytes, list[_Pending]]] = [self._record(first, out)]
+        stack: list[tuple[_Slot, Payload, list[_Pending]]] = [self._record(first, out)]
         while stack:
             slot, payload, waiting = stack[-1]
             if not waiting:
                 stack.pop()
                 continue
+            self._charge(slot.length)  # each waiting delta reads its base again
             stack.append(self._record(self._apply(waiting.pop(), slot, payload), out))
 
-    def _record(self, res: _Resolved, out: list[PackObject]) -> tuple[_Slot, bytes, list[_Pending]]:
+    def _record(
+        self, res: _Resolved, out: list[PackObject]
+    ) -> tuple[_Slot, Payload, list[_Pending]]:
         if res.oid in self._by_oid:
             # git accepts a repeated object unless asked to be --strict; a pack that names
             # one twice is not one git's own packers write.
             raise _malformed("duplicate object")
-        slot = _Slot(res.kind, res.depth, res.payload)
+        slot = _Slot(res.kind, res.depth, res.payload, 0, len(res.payload))
         if self._spool_dir is not None:
             if self._spool is None:
                 fd, name = tempfile.mkstemp(dir=self._spool_dir)
@@ -549,7 +568,7 @@ class PackReader:
         waiting = self._wait_off.pop(res.offset, []) + self._wait_oid.pop(res.oid, [])
         return slot, res.payload, waiting
 
-    def _load(self, slot: _Slot) -> bytes:
+    def _load(self, slot: _Slot) -> Payload:
         held = slot.payload
         if held is None and self._spool is not None:
             self._spool.seek(slot.foff)
@@ -572,7 +591,7 @@ class PackReader:
 # ---------------------------------------------------------------- objects
 
 
-def is_binary(payload: bytes) -> bool:
+def is_binary(payload: Payload) -> bool:
     """Git's rule: a NUL in the first 8000 bytes."""
     return b"\0" in payload[:8000]
 
@@ -581,11 +600,11 @@ _ENCODING_OK = re.compile(r"(?:utf-?8|us-ascii|iso[-_]?8859-\d{1,2}|windows-125\
 _HEX_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 
 
-def _split(payload: bytes) -> tuple[list[tuple[bytes, bytes]], bytes, bytes]:
+def _split(payload: Payload) -> tuple[list[tuple[Payload, bytes]], Payload, Payload]:
     """Headers (continuation lines joined with a newline), the raw header block, the message."""
     cut = payload.find(b"\n\n")
     head, message = (payload, b"") if cut < 0 else (payload[:cut], payload[cut + 2 :])
-    lines: list[tuple[bytes, list[bytes]]] = []
+    lines: list[tuple[Payload, list[Payload]]] = []
     for line in head.split(b"\n"):
         if line.startswith(b" ") and lines:
             lines[-1][1].append(line[1:])  # joined once below: a long header stays linear
@@ -595,11 +614,11 @@ def _split(payload: bytes) -> tuple[list[tuple[bytes, bytes]], bytes, bytes]:
     return [(name, b"\n".join(parts)) for name, parts in lines], head, message
 
 
-def _first(headers: list[tuple[bytes, bytes]], name: bytes) -> bytes | None:
+def _first(headers: list[tuple[Payload, bytes]], name: bytes) -> bytes | None:
     return next((value for key, value in headers if key == name), None)
 
 
-def render_text(payload: bytes) -> tuple[str, str | None]:
+def render_text(payload: Payload) -> tuple[str, str | None]:
     """A commit or an annotated tag as the text the layers read: every header, then the message.
 
     The message is decoded by the object's ``encoding`` header, as ``git log``
@@ -619,18 +638,18 @@ def render_text(payload: bytes) -> tuple[str, str | None]:
     return head.decode(codec, "replace") + "\n\n" + message.decode(codec, "replace"), flag
 
 
-def _hex_header(headers: list[tuple[bytes, bytes]], name: bytes) -> str | None:
+def _hex_header(headers: list[tuple[Payload, bytes]], name: bytes) -> str | None:
     value = _first(headers, name)
     text = None if value is None else value.decode("ascii", "replace")
     return text if text is not None and _HEX_ID.fullmatch(text) else None
 
 
-def commit_tree(payload: bytes) -> str | None:
+def commit_tree(payload: Payload) -> str | None:
     """The tree id a commit names, or None."""
     return _hex_header(_split(payload)[0], b"tree")
 
 
-def tag_target(payload: bytes) -> tuple[str, str] | None:
+def tag_target(payload: Payload) -> tuple[str, str] | None:
     """The ``(id, type)`` an annotated tag points at, or None."""
     headers = _split(payload)[0]
     oid, kind = _hex_header(headers, b"object"), _first(headers, b"type")
@@ -640,7 +659,7 @@ def tag_target(payload: bytes) -> tuple[str, str] | None:
 _MODE = re.compile(rb"[0-7]{1,7}")
 
 
-def tree_entries(payload: bytes, *, oid_len: int = 20) -> list[tuple[str, str, str]]:
+def tree_entries(payload: Payload, *, oid_len: int = 20) -> list[tuple[str, str, str]]:
     """A tree's ``(mode, name, hex id)`` entries. Raises ``PackRefusedError("malformed")``."""
     entries: list[tuple[str, str, str]] = []
     i = 0

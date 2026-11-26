@@ -32,8 +32,10 @@ if TYPE_CHECKING:
     from .git_pack import PackObject
 
 MEMORY_BYTES = 3 * 1024 * 1024 * 1024
-"""Address space: one object at its largest, inflated, beside the reader's
-own state. Bases are spooled to disk, not held."""
+"""Address space: the objects one piece of the pack completes, each held once
+as it was inflated, beside the reader's own state; ``max_inflated`` bounds
+their sum. Bases are spooled to disk, not held. An allocation that still
+fails is refused as ``too_large``."""
 
 READ_BYTES = 1024 * 1024
 """What is read from stdin at a time."""
@@ -79,6 +81,8 @@ def main(argv: list[str]) -> int:
         out.write(b"end\n")
     except PackRefusedError as refused:
         out.write(b"refused %s\n" % refused.reason.encode())
+    except MemoryError:
+        out.write(b"refused too_large\n")
     finally:
         reader.close()
         out.flush()

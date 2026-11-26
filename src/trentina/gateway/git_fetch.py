@@ -11,7 +11,8 @@ that the agent was not told about by object id:
   what was flagged and what went unjudged on git's side band, counts in one
   line what is still pending, and delivers. Pending objects go on being
   judged in the background; their verdicts warm the cache and land as
-  ``detections`` rows.
+  ``detections`` rows. When the judging ends and has found more than the
+  fetch's own row recorded, one ``fetch_judged`` row says what.
 - **Forge text** is replaced, never judged: side-band channels 2 and 3 are
   dropped and the gateway writes its own progress lines from a closed
   vocabulary; an ``ERR`` line, a push's ``unpack`` reason and its ``ng``
@@ -29,18 +30,20 @@ that the agent was not told about by object id:
 
 Every line the gateway writes on the side band is closed words and an object
 id, never a path or content: ``Trentina: flagged <kind> <oid> (<layer>,
-<risk>)``, ``Trentina: unjudged <kind> <oid> (<gap>)``.
+<risk>)``, ``Trentina: unjudged <kind> <oid> (<gap>)``, ``Trentina: unjudged tip
+files (<n> want-refs not in the last listing)``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import sys
 import uuid
 import weakref
 from collections import OrderedDict, deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -72,9 +75,10 @@ from .git_wire import (
     progress,
     rewrite_listing,
 )
+from .relay import Operation
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Callable
 
     from ..transports.perimeter import InTree
     from .profile import GitGrant, Profile
@@ -108,6 +112,10 @@ LANE_QUEUE = 4
 BUSY = "busy"
 """The unjudged-pack reason for a fetch that found no judging slot."""
 
+FOLLOW_UP = "fetch_judged"
+"""The ``tool`` of the row a fetch writes when its judging ends having found
+more than the fetch's own row recorded. Rows are chained and never updated."""
+
 COLD_PACK_OBJECTS = 1000
 """A pack declaring more objects than this is judged as a clone, whatever its
 request said: ``have`` and ``filter`` lines are the client's to write, the
@@ -126,6 +134,15 @@ packed average of about 1,585 bytes an object (19,635 objects in 30,389 KiB)
 for 1,200 tokens, is about 0.76 tokens a pack byte, so about 1.7 MB of pack
 fills the deadline; 1.5 MiB is the object count's 1,000 objects at that
 average."""
+
+COLD_INFLATED_BYTES = 3_861_000
+"""A fetch whose reader has handed the judge more object bytes than this is
+judged as a clone from then on: a small pack's deltas can inflate to
+gigabytes (a few hundred KB of pack fanning out to 2 GB), which neither the
+declared count nor the carried bytes show. The slot's 1.29M tokens (1,430 a
+second for 900 s) at ``git_chunks.TOKEN_BYTES`` (3) bytes a token is about
+3.9 MB of objects; at trentina's own 1,200 tokens an object it is the count
+limit's 1,000 objects over again."""
 
 PACK_HEADER_BYTES = 12
 """``PACK``, a version and the object count, each four bytes."""
@@ -197,7 +214,8 @@ class _Slots:
 
     A cold fetch (no ``have``, a filtered fetch of the listed tips, a pack
     declaring more than ``COLD_PACK_OBJECTS``, or one that has carried more
-    than ``COLD_PACK_BYTES``) takes at most ``cold_limit`` of them. A cold
+    than ``COLD_PACK_BYTES``, or whose objects have inflated past
+    ``COLD_INFLATED_BYTES``) takes at most ``cold_limit`` of them. A cold
     clone cannot finish judging inside ``judge_deadline`` and holds its slot
     for all of it, so without the bound two profiles cloning would leave
     every fetch after them, the cheap ones that do finish, unjudged as
@@ -275,11 +293,13 @@ async def _hold(
     judge: asyncio.Task[None],
     feeder: _Feeder,
     deadline: float,
+    then: Callable[[], None] | None = None,
 ) -> None:
     """Keep a judging slot until the reader has ended and the judge task has
     settled, however the response ended; at the latest ``SLOT_GRACE`` past the
     deadline, which bounds both. It is released as it is then, cold if it was
-    promoted on the way."""
+    promoted on the way, and ``then``, which never raises, is told the judging
+    is over."""
     try:
         async with asyncio.timeout(deadline + SLOT_GRACE):
             await feeder.over.wait()
@@ -288,6 +308,8 @@ async def _hold(
         logger.warning("git judge: a judging slot was released at its backstop")
     finally:
         _slots.release(slot)
+        if then is not None:
+            then()
 
 
 # --- the chunk key -------------------------------------------------------------
@@ -395,6 +417,9 @@ class Fetch:
     #: The request says clone: no ``have`` (``git_wire.is_cold_fetch``), or a
     #: filtered fetch of the listed tips. The pack header can say so too.
     cold: bool = False
+    #: ``want-ref`` names the last listing did not show: their tips' whole-file
+    #: pass cannot run, and the fetch says so.
+    unlisted: int = 0
 
 
 def new_call_ref() -> str:
@@ -434,12 +459,23 @@ class _Feeder:
     A refusal from the reader, a child that dies or one past the deadline ends
     the judging and leaves the rest of the pack to be named unjudged; the
     pack itself still reaches the agent, under ``flag``. Writing waits for the
-    child to take each piece, so delivery runs no faster than the reading.
+    child to take each piece, so delivery runs no faster than the reading. The
+    reader ends when the judge's own deadline does: it is started later than
+    the judge, and would otherwise outlive it.
     """
 
-    def __init__(self, reading: _Reading, judge: GitJudge) -> None:
+    def __init__(
+        self,
+        reading: _Reading,
+        judge: GitJudge,
+        inflated: Callable[[], bool] | None = None,
+    ) -> None:
         self._reading = reading
         self._judge = judge
+        #: Told once, when the objects handed to the judge pass ``COLD_INFLATED_BYTES``;
+        #: False says the fetch may not be counted cold, and the reading stops.
+        self._on_inflated = inflated
+        self._inflated = 0
         self._held = bytearray()
         self._proc: asyncio.subprocess.Process | None = None
         self._task: asyncio.Task[None] | None = None
@@ -452,7 +488,7 @@ class _Feeder:
         if self._proc is None and self.refused is None:
             try:
                 self._proc = await asyncio.create_subprocess_exec(
-                    *self._reading.argv(),
+                    *self._remaining().argv(),
                     stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.DEVNULL,
@@ -466,6 +502,18 @@ class _Feeder:
                 return None
             self._task = asyncio.ensure_future(self._read(self._proc))
         return self._proc
+
+    def _expires(self) -> float | None:
+        """The event-loop time the judge's deadline passes, once it has started."""
+        return self._judge.expires_at
+
+    def _remaining(self) -> _Reading:
+        """The reading with the child's CPU limit cut to what is left of the judge's deadline."""
+        expires = self._expires()
+        if expires is None:
+            return self._reading
+        left = math.ceil(expires - asyncio.get_running_loop().time())
+        return replace(self._reading, deadline=max(1, min(self._reading.deadline, left)))
 
     async def feed(self, piece: bytes) -> None:
         self._held += piece
@@ -516,7 +564,12 @@ class _Feeder:
 
     async def _read(self, proc: asyncio.subprocess.Process) -> None:
         try:
-            async with asyncio.timeout(self._reading.deadline):
+            expires = self._expires()
+            async with (
+                asyncio.timeout(self._reading.deadline)
+                if expires is None
+                else asyncio.timeout_at(expires)
+            ):
                 ended = await self._objects(proc)
             if ended:
                 self._judge.finish_pack()
@@ -552,6 +605,8 @@ class _Feeder:
             if self._judge.full():
                 self.refused = "too_many"
                 return False
+            if self._past_inflated(length):
+                return False
             if over:
                 self._judge.submit_unread(oid, kind, "too_large")
                 continue
@@ -561,6 +616,15 @@ class _Feeder:
             await self._judge.add(PackObject(oid=oid, kind=kind, content=content, offset=offset))
         self.refused = self.refused or "failed"  # it ended without saying so
         return False
+
+    def _past_inflated(self, length: int) -> bool:
+        """Count an object's bytes; True when that takes the fetch past
+        ``COLD_INFLATED_BYTES`` and it may not be counted cold, so the reader stops."""
+        before = self._inflated
+        self._inflated += length
+        if before > COLD_INFLATED_BYTES or self._inflated <= COLD_INFLATED_BYTES:
+            return False
+        return self._on_inflated is not None and not self._on_inflated()
 
 
 def _header(words: list[str], limit: int) -> tuple[str, str, int, int, bool]:
@@ -582,14 +646,25 @@ _OID_HEX = frozenset({40, 64})
 _HEX = frozenset("0123456789abcdef")
 
 
-def _named(judge: GitJudge, refused: str | None, refs: int) -> list[bytes]:
+def _notices(refs: int, unlisted: int) -> list[str]:
+    """The lines for what the fetch's request and the last listing leave unjudged
+    or flagged, whatever the pack did: ref names flagged, tips whose files no
+    pass reads."""
+    lines = []
+    if refs:
+        lines.append(f"Trentina: flagged ref names in the last listing: {refs}")
+    if unlisted:
+        lines.append(f"Trentina: unjudged tip files ({unlisted} want-refs not in the last listing)")
+    return lines
+
+
+def _named(judge: GitJudge, refused: str | None, refs: int, unlisted: int) -> list[bytes]:
     """The side-band lines naming what a fetch delivered flagged, unjudged or pending."""
     outcome = judge.outcome()
     lines: list[str] = []
     if refused is not None:
         lines.append(f"Trentina: unjudged pack ({refused})")
-    if refs:
-        lines.append(f"Trentina: flagged ref names in the last listing: {refs}")
+    lines += _notices(refs, unlisted)
     if len(outcome.flagged) + len(outcome.unjudged) > MAX_NAMED:
         lines.append(
             f"Trentina: flagged {len(outcome.flagged)} objects, "
@@ -623,7 +698,7 @@ def _found(flagged: object, unjudged: object) -> str | None:
 _COUNTS = ("git_objects", "git_flagged", "git_unjudged", "git_pending", "git_units", "git_cached")
 
 
-def _account(judge: GitJudge, refused: str | None) -> dict[str, str]:
+def _account(judge: GitJudge, refused: str | None, unlisted: int = 0) -> dict[str, str]:
     outcome = judge.outcome()
     counts = {
         "git_objects": str(outcome.total),
@@ -635,7 +710,23 @@ def _account(judge: GitJudge, refused: str | None) -> dict[str, str]:
     }
     if refused is not None:
         counts["git_pack"] = refused
+    if unlisted:
+        counts["git_unlisted"] = str(unlisted)
     return counts
+
+
+def _news(seen: dict[str, str], final: dict[str, str]) -> bool:
+    """True when ``final`` found more than the account ``seen``: a flag, a gap
+    or a pack refusal. A fetch recorded ``busy`` had the rest of its pack named
+    unjudged already, so only a flag is news to it."""
+    if int(final["git_flagged"]) > int(seen.get("git_flagged", 0)):
+        return True
+    if seen.get("git_pack") == BUSY:
+        return False
+    refused = final.get("git_pack")
+    return int(final["git_unjudged"]) > int(seen.get("git_unjudged", 0)) or (
+        refused is not None and refused != seen.get("git_pack")
+    )
 
 
 def _declared_objects(pack: bytes) -> int:
@@ -657,7 +748,6 @@ class _FetchRelay:
         self.tail_bytes = 0
         self.judge: GitJudge | None = None
         self.feeder: _Feeder | None = None
-        self.refs = _flagged_refs.pop((fetch.profile.name, fetch.slug), 0)
         self.busy = False
         self.cold = fetch.cold
         #: The pack's first bytes, held for its header before a slot is taken.
@@ -665,6 +755,18 @@ class _FetchRelay:
         #: Pack bytes the forge has sent, for ``COLD_PACK_BYTES``.
         self.carried = 0
         self.slot: _Slot | None = None
+        #: What ``settle`` wrote on the operation's row, for the judging's end to compare with.
+        self.recorded: dict[str, str] | None = None
+        self.settled = False
+        self.closed = False
+        #: The judging has ended (``_hold`` says so).
+        self.over = False
+
+    def _take_refs(self) -> int:
+        """The ref names the repository's last listing had flagged, taken at the
+        point they are written on the side band: a round that names nothing
+        leaves them for the next fetch."""
+        return _flagged_refs.pop((self.fetch.profile.name, self.fetch.slug), 0)
 
     def _start(self) -> _Feeder | None:
         """The judging of this fetch, or None when no slot is free: the pack
@@ -697,9 +799,9 @@ class _FetchRelay:
                 spool_dir=str(Path(config.perimeter_db_path).parent),
             )
             task = self.judge.start(float(fetch.grant.judge_deadline))
-            self.feeder = _Feeder(reading, self.judge)
+            self.feeder = _Feeder(reading, self.judge, self._inflated)
             hold = asyncio.ensure_future(
-                _hold(slot, task, self.feeder, float(fetch.grant.judge_deadline))
+                _hold(slot, task, self.feeder, float(fetch.grant.judge_deadline), self._ended)
             )
             _CLOSING.add(hold)
             hold.add_done_callback(_CLOSING.discard)
@@ -735,6 +837,11 @@ class _FetchRelay:
             return
         if self.feeder is not None and pack:
             await self.feeder.feed(pack)
+
+    def _inflated(self) -> bool:
+        """The reader has handed the judge a clone's weight of objects: count
+        the fetch cold, as ``_promote`` does for a pack's bytes."""
+        return self.cold or self._promote()
 
     def _promote(self) -> bool:
         """Count this fetch cold now that its pack is a clone's size. With the
@@ -796,7 +903,8 @@ class _FetchRelay:
         self.tail.clear()
         self.tail_bytes = 0
         if self.busy:
-            yield _unjudged(BUSY) + held
+            notices = [progress(line) for line in _notices(self._take_refs(), self.fetch.unlisted)]
+            yield _unjudged(BUSY) + b"".join(notices) + held
             return
         if self.feeder is None or self.judge is None:
             yield held
@@ -811,36 +919,95 @@ class _FetchRelay:
         if not finishing.done():
             _CLOSING.add(finishing)
             finishing.add_done_callback(_CLOSING.discard)
+            yield b"".join(
+                _named(self.judge, self.feeder.refused, self._take_refs(), self.fetch.unlisted)
+            )
             yield progress("Trentina: still reading the pack; the rest is judged after delivery")
             yield held
             return
         await finishing
         await self.judge.wait(max(until - loop.time(), 0.0))
-        yield b"".join(_named(self.judge, self.feeder.refused, self.refs)) + held
+        named = _named(self.judge, self.feeder.refused, self._take_refs(), self.fetch.unlisted)
+        yield b"".join(named) + held
 
     def settle(self) -> None:
         op = self.ctx.op
+        self.settled = True
         if self.busy:
             op.normalized = {
                 **dict.fromkeys(_COUNTS, "0"),
                 "git_pack": BUSY,
+                **({"git_unlisted": str(self.fetch.unlisted)} if self.fetch.unlisted else {}),
             }
+            self.recorded = op.normalized
             op.flag_reason = "git_unjudged"
             op.settle(Outcome.OK, "git_unjudged")
             return
         if self.judge is None:
             op.settle(Outcome.OK)
             return
+        self._account_on(op, self.judge)
+
+    def _account_on(self, op: Operation, judge: GitJudge) -> None:
+        """Write the judging's account now on ``op``, the counts and the reason."""
         refused = self.feeder.refused if self.feeder is not None else None
-        op.normalized = _account(self.judge, refused)
-        outcome = self.judge.outcome()
-        found = _found(outcome.flagged, outcome.unjudged or refused)
+        op.normalized = self.recorded = _account(judge, refused, self.fetch.unlisted)
+        outcome = judge.outcome()
+        found = _found(outcome.flagged, outcome.unjudged or refused or self.fetch.unlisted)
         op.flag_reason = found
         op.settle(Outcome.OK, found)
+
+    def _ended(self) -> None:
+        """The judging has ended. What it found after ``settle`` wrote the
+        operation's account, a late flag, the deadline, a late refusal, L3
+        unavailable, is said once more. Before the response has ended there is
+        nothing to compare with: ``settle`` takes the final account itself."""
+        self.over = True
+        if self.settled or self.closed:
+            self._guarded_report()
+
+    def _guarded_report(self) -> None:
+        """``_report_late``, which never raises: a row failing is logged and nothing else."""
+        try:
+            self._report_late()
+        except Exception as exc:
+            logger.warning(
+                "git judge: late findings not recorded: %s at %s", exc_kind(exc), exc_where(exc)
+            )
+
+    def _report_late(self) -> None:
+        """Compare the final account with what ``settle`` recorded. The operation's
+        row is amended while it is still unwritten; once written, rows are chained
+        and never updated, so one ``fetch_judged`` row carries the final counts."""
+        op, judge, feeder = self.ctx.op, self.judge, self.feeder
+        if judge is None or feeder is None:
+            return
+        if not _news(self.recorded or {}, _account(judge, feeder.refused, self.fetch.unlisted)):
+            return
+        if self.recorded is not None and not op.finished and op.outcome is Outcome.OK:
+            self._account_on(op, judge)
+            return
+        # Its own Operation, so the row is written as every perimeter row is.
+        late = Operation(
+            op.profile,
+            backend=op.backend,
+            tool=FOLLOW_UP,
+            destination=op.destination,
+            destination_kind=op.destination_kind,
+            started=op.started,
+            call_ref=op.call_ref,
+        )
+        self._account_on(late, judge)
+        task = asyncio.ensure_future(late.finish())
+        _CLOSING.add(task)
+        task.add_done_callback(_CLOSING.discard)
 
     def close(self) -> None:
         """However the answer ended, the pack that arrived is still read and
         judged, in the background: a request that went away is not waited on."""
+        self.closed = True
+        if self.over and not self.settled:
+            self._guarded_report()  # the response ended without an account of its own
         if self.feeder is not None and not self.feeder.done():
             task = asyncio.ensure_future(self.feeder.finish())
             _CLOSING.add(task)

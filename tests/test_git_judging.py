@@ -15,6 +15,7 @@ import json
 import os
 import sqlite3
 import subprocess
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -23,7 +24,7 @@ import httpx
 import pytest
 
 from trentina.defense import Screened
-from trentina.gateway import git_fetch, git_judge, git_transport
+from trentina.gateway import git_fetch, git_judge, git_transport, relay
 from trentina.gateway.profile import AuthConfig, Profile
 from trentina.l1.pipeline import PipelineResult, PipelineStats
 from trentina.quarantine.classifier import ClassifierResult
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from trentina.gateway.profile import GitGrant
+    from trentina.transports.perimeter import InTree
 
 pytestmark = needs_git
 
@@ -553,6 +555,99 @@ class TestTheRow:
         assert row["error_message"] == "git_flagged"
 
 
+async def _follow_ups(path: Path, timeout: float = 10.0) -> list[sqlite3.Row]:
+    """The ``fetch_judged`` rows, once one is written."""
+    rows: list[sqlite3.Row] = []
+    for _ in range(int(timeout / 0.02)):
+        rows = _db(path, "SELECT * FROM gateway_calls WHERE tool = 'fetch_judged' ORDER BY id")
+        if rows:
+            return rows
+        await asyncio.sleep(0.02)
+    return rows
+
+
+class TestWhatTheJudgingFindsAfterTheRow:
+    """A fetch's row is its account at the response's end; what the judging
+    finds later is one more row, never an update of a chained one."""
+
+    @pytest.mark.parametrize("how", ["l3_unavailable", "deadline"])
+    async def test_a_gap_after_the_response_is_one_follow_up_row(
+        self,
+        judged: Any,
+        layers: Layers,
+        audit_db: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        how: str,
+    ) -> None:
+        monkeypatch.setattr(git_fetch, "TAIL_HOLD", 0.2)
+        if how == "deadline":
+            start = git_judge.GitJudge.start
+            monkeypatch.setattr(git_judge.GitJudge, "start", lambda self, _d: start(self, 0.6))
+            layers.delay = 5.0
+        else:
+
+            async def unavailable(_text: str, _defense: Any, _briefing: str) -> dict[str, Any]:
+                await asyncio.sleep(0.6)
+                return {"l3_unavailable": True}
+
+            monkeypatch.setattr(git_judge, "judge_l3", unavailable)
+        judged.repo.plant({"notes.txt": b"some notes\n"})
+        code, output = await judged.repo.clone(judged, "2")
+        assert code == 0, output
+        assert any(line.startswith("Trentina: pending") for line in _remote(output)), output
+        (late,) = await _follow_ups(audit_db)
+        fetch = [r for r in _db(audit_db, "SELECT * FROM gateway_calls") if r["tool"] == "fetch"]
+        (own,) = [r for r in fetch if r["call_ref"] == late["call_ref"]]
+        assert json.loads(own["normalized"])["git_unjudged"] == "0", "the gap came after it"
+        assert (late["profile"], late["backend"], late["outcome"]) == ("agent1", "git:forge", "ok")
+        assert late["call_ref"] == own["call_ref"]
+        assert late["error_message"] == "git_unjudged"
+        counts = json.loads(late["normalized"])
+        assert int(counts["git_unjudged"]) > 0
+        await _background_done()
+
+    async def test_a_fetch_with_nothing_new_writes_no_follow_up(
+        self, judged: Any, layers: Layers, audit_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(git_fetch, "TAIL_HOLD", 0.2)
+        layers.delay = 0.6  # still judging at the response's end, and clean when it ends
+        judged.repo.plant({"notes.txt": b"some notes\n"})
+        code, output = await judged.repo.clone(judged, "2")
+        assert code == 0, output
+        assert await _slots_free()
+        await _background_done()
+        await asyncio.sleep(0.1)
+        rows = _db(audit_db, "SELECT tool FROM gateway_calls")
+        assert rows and not [r for r in rows if r["tool"] == "fetch_judged"]
+
+    async def test_a_row_that_cannot_be_written_costs_the_fetch_nothing(
+        self,
+        judged: Any,
+        layers: Layers,
+        audit_db: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(git_fetch, "TAIL_HOLD", 0.2)
+        layers.delay = 0.6
+        tried: list[str] = []
+
+        def broken(*_args: Any, **_kwargs: Any) -> None:
+            tried.append("row")
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(relay, "record_gateway_call", broken)
+        judged.repo.plant({"notes.txt": f"{INSTRUCTION}\n".encode()})
+        code, output = await judged.repo.clone(judged, "2")
+        assert code == 0, output
+        assert await _slots_free()
+        await _background_done()
+        for _ in range(500):
+            if tried:
+                break
+            await asyncio.sleep(0.02)
+        assert tried, "a late flag asked for a row"
+
+
 # --- push ------------------------------------------------------------------------
 
 
@@ -883,10 +978,13 @@ class TestJudgingSlots:
         assert slots.total == slots.cold == 0
         assert not slots.by_profile
 
-    async def _fetch_big_blobs(self, judged: Any, monkeypatch: pytest.MonkeyPatch) -> str:
+    async def _fetch_big_blobs(
+        self, judged: Any, monkeypatch: pytest.MonkeyPatch, limit: str = "COLD_PACK_BYTES"
+    ) -> str:
         """Clone, then fetch two large blobs over a valid ``have``: two blobs,
-        a tree and a commit, far under the object count, well over the bytes."""
-        monkeypatch.setattr(git_fetch, "COLD_PACK_BYTES", 64 * 1024)
+        a tree and a commit, far under the object count, well over the bytes
+        ``limit`` names (the pack's, or what the reader has handed the judge)."""
+        monkeypatch.setattr(git_fetch, limit, 64 * 1024)
         repo = judged.repo
         code, output = await repo.clone(judged, "2")
         assert code == 0, output
@@ -914,6 +1012,39 @@ class TestJudgingSlots:
         assert not any("unjudged pack" in line for line in _remote(output)), output
         assert await _slots_free()
         assert git_fetch._slots.cold == 0, "given back cold, as it was held"
+
+    async def test_objects_that_inflate_past_the_limit_are_counted_cold_by_the_reader(
+        self, judged: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(git_fetch, "COLD_PACK_BYTES", 10 * 1024 * 1024)
+        promoted = _spy_promote(monkeypatch)
+        taken = _spy_take(monkeypatch)
+        output = await self._fetch_big_blobs(judged, monkeypatch, "COLD_INFLATED_BYTES")
+        assert taken[-1] is False, "the request, the header and the pack's bytes all say warm"
+        assert promoted == [True], "promoted once, by the reader, as the objects passed the limit"
+        assert not any("unjudged pack" in line for line in _remote(output)), output
+        assert await _slots_free()
+        assert git_fetch._slots.cold == 0, "given back cold, as it was held"
+
+    async def test_objects_past_the_inflated_limit_with_the_cold_slots_taken_are_busy(
+        self, judged: Any, audit_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_GIT_JUDGES", "2")
+        clone = git_fetch._slots.take("someone-else", cold=True)
+        assert clone, "the one cold slot of two"
+        monkeypatch.setattr(git_fetch, "COLD_PACK_BYTES", 10 * 1024 * 1024)
+        promoted = _spy_promote(monkeypatch)
+        try:
+            output = await self._fetch_big_blobs(judged, monkeypatch, "COLD_INFLATED_BYTES")
+            assert promoted == [False]
+            assert "Trentina: unjudged pack (busy)" in _remote(output), output
+            assert len((judged.repo.work / "big0.txt").read_bytes()) > 96 * 1024
+            rows = _db(audit_db, "SELECT * FROM gateway_calls ORDER BY id")
+            assert "git_unjudged" in {r["error_message"] for r in rows}, "never served clean"
+            assert git_fetch._slots.cold == 1, "the cold slot was not taken"
+        finally:
+            git_fetch._slots.release(clone)
+        assert await _slots_free()
 
     async def test_large_blobs_past_the_bytes_with_the_cold_slots_taken_are_busy(
         self, judged: Any, audit_db: Path, monkeypatch: pytest.MonkeyPatch
@@ -969,6 +1100,109 @@ def _bare_judge() -> git_judge.GitJudge:
     )
 
 
+def _relay(unlisted: int = 0) -> git_fetch._FetchRelay:
+    """A fetch answer's state with nothing behind it, to drive ``_release`` alone."""
+    fetch = git_fetch.Fetch(
+        profile=Profile(name="agent1", auth=AuthConfig(bearer_token_env="TOK")),
+        grant=cast("GitGrant", SimpleNamespace()),
+        source="git:forge/acme/widgets",
+        slug="acme/widgets",
+        v2=True,
+        wants=[],
+        unlisted=unlisted,
+    )
+    relay = git_fetch._FetchRelay(cast("InTree", SimpleNamespace()), fetch)
+    relay.tail.append(b"THE-TAIL")
+    relay.tail_bytes = len(b"THE-TAIL")
+    return relay
+
+
+async def _released(relay: git_fetch._FetchRelay) -> bytes:
+    return b"".join([piece async for piece in relay._release()])
+
+
+class TestWhatIsNamedAtTheEnd:
+    async def test_a_reader_still_going_at_the_hold_names_what_is_known_first(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(git_fetch, "TAIL_HOLD", 0.05)
+        relay = _relay()
+        relay.judge = _bare_judge()
+        relay.judge.submit_unread("1" * 40, "blob", "too_large")
+        gate = asyncio.Event()
+
+        async def finish() -> None:
+            await gate.wait()
+
+        relay.feeder = cast("git_fetch._Feeder", SimpleNamespace(refused=None, finish=finish))
+        sent = await _released(relay)
+        gate.set()
+        await asyncio.sleep(0)
+        named, still, tail = (
+            sent.index(f"unjudged blob {'1' * 40} (too_large)".encode()),
+            sent.index(b"still reading"),
+            sent.index(b"THE-TAIL"),
+        )
+        assert named < still < tail
+
+    async def test_a_listings_flag_is_kept_by_a_round_that_names_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(git_fetch, "_flagged_refs", OrderedDict())
+        git_fetch._remember_refs("agent1", "acme/widgets", 2)
+        sent = await _released(_relay())  # acks only: no pack, no judging
+        assert sent == b"THE-TAIL"
+        assert git_fetch._flagged_refs == {("agent1", "acme/widgets"): 2}
+
+    async def test_a_busy_fetch_names_the_listings_flag_and_takes_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(git_fetch, "_flagged_refs", OrderedDict())
+        git_fetch._remember_refs("agent1", "acme/widgets", 2)
+        relay = _relay(unlisted=3)
+        relay.busy = True
+        sent = await _released(relay)
+        assert b"Trentina: unjudged pack (busy)" in sent
+        assert b"Trentina: flagged ref names in the last listing: 2" in sent
+        assert b"Trentina: unjudged tip files (3 want-refs not in the last listing)" in sent
+        assert sent.endswith(b"THE-TAIL")
+        assert not git_fetch._flagged_refs, "named once"
+
+
+class _Silent:
+    """A reader child that never says anything."""
+
+    returncode: int | None = None
+
+    def __init__(self) -> None:
+        self.stdout = asyncio.StreamReader()
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+    async def wait(self) -> int:
+        return -9
+
+
+class TestTheReaderEndsWithTheJudge:
+    def _feeder(self, expires_at: float) -> git_fetch._Feeder:
+        reading = git_fetch._Reading("sha1", 1, 1, 900, "/nowhere")
+        judge = SimpleNamespace(expires_at=expires_at, close=lambda: None, finish_pack=lambda: None)
+        return git_fetch._Feeder(reading, cast("git_judge.GitJudge", judge))
+
+    async def test_a_reader_still_going_past_the_judges_expiry_is_ended(self) -> None:
+        feeder = self._feeder(asyncio.get_running_loop().time() + 0.1)
+        task = asyncio.ensure_future(feeder._read(cast("Any", _Silent())))
+        await asyncio.wait_for(feeder.over.wait(), 2)
+        await task
+        assert feeder.refused == "deadline"
+
+    async def test_the_child_is_started_with_what_is_left_of_the_judges_deadline(self) -> None:
+        feeder = self._feeder(asyncio.get_running_loop().time() + 5)
+        assert 1 <= feeder._remaining().deadline <= 5
+        assert self._feeder(asyncio.get_running_loop().time() - 9)._remaining().deadline == 1
+
+
 class TestJudgeBounds:
     async def test_a_pack_with_more_objects_than_the_judge_tracks_is_delivered_whole_and_named(
         self, judged: Any, monkeypatch: pytest.MonkeyPatch
@@ -980,7 +1214,7 @@ class TestJudgeBounds:
         assert "Trentina: unjudged pack (too_many)" in _remote(output), output
         assert (judged.repo.work / "notes.txt").read_text() == "some notes\n"
 
-    def test_a_tree_past_the_byte_bound_is_unjudged_not_dropped(
+    def test_a_tree_past_the_byte_bound_keeps_its_names_judged(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         judge = _bare_judge()
@@ -993,7 +1227,10 @@ class TestJudgeBounds:
         judge.submit(PackObject(oid="1" * 40, kind="tree", content=content, offset=0))
         judge.submit(PackObject(oid="2" * 40, kind="tree", content=content, offset=0))
         assert judge._tree_bytes == held
-        assert [(o, g) for _k, o, g in judge.outcome().unjudged] == [("2" * 40, "backlog")]
+        # Only the tip walk loses the second tree; its names are still judged.
+        assert judge._dropped == {"2" * 40}
+        assert not judge.outcome().unjudged
+        assert judge._objects["2" * 40].waiting
 
     def test_the_judge_says_when_it_tracks_as_many_objects_as_it_may(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1056,4 +1293,27 @@ class TestWantRef:
         assert [promisor for _profile, promisor in lanes] == [False], "one lane, not lazy"
         assert taken == [True], "a want-ref fetch is cold"
         assert fetches and fetches[-1] == [head], "the name resolved to the listed tip"
+        assert await _slots_free()
+
+    async def test_a_want_ref_the_listing_did_not_show_is_named_a_gap(
+        self, judged: Any, audit_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        judged.repo.git("config", "uploadpack.allowRefInWant", "true", cwd=judged.repo.bare)
+        monkeypatch.setattr(git_transport, "resolve_refs", lambda *_args: [])
+        headers = {"Content-Type": UPLOAD_REQUEST, "Git-Protocol": "version=2"}
+        head = pkt(b"command=fetch\n") + pkt(b"agent=git/2.55.0\n") + b"0001"
+        body = head + pkt(b"want-ref refs/heads/main\n") + pkt(b"done\n") + FLUSH
+        response = await judged.client.post(
+            f"{judged.url}/acme/widgets/git-upload-pack", content=body, headers=headers
+        )
+        assert response.status_code == 200
+        assert b"packfile" in response.content
+        gap = b"Trentina: unjudged tip files (1 want-refs not in the last listing)"
+        assert gap in response.content
+        await _background_done()
+        await _settled(audit_db)
+        rows = _db(audit_db, "SELECT * FROM gateway_calls")
+        (row,) = [r for r in rows if r["normalized"]]
+        assert json.loads(row["normalized"])["git_unlisted"] == "1"
+        assert row["error_message"] == "git_unjudged"
         assert await _slots_free()

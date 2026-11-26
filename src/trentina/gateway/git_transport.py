@@ -304,6 +304,7 @@ class GitRoute(Route[GitAdmitted, InTree]):
             negotiation = replace(
                 negotiation,
                 wants=[*negotiation.wants, *(oid for oid in seen if oid not in known)],
+                unlisted=len(negotiation.want_refs) - len(seen),
             )
         if negotiation is not None and (negotiation.wants or negotiation.want_refs):
             # A judged fetch waits for its lane before the forge is asked, and
@@ -405,6 +406,8 @@ class Negotiation:
     promisor: bool
     cold: bool = False
     want_refs: list[str] = field(default_factory=list)
+    #: ``want_refs`` the last listing did not show, so no tip was added for them.
+    unlisted: int = 0
 
     @property
     def object_format(self) -> str:
@@ -610,6 +613,7 @@ async def _relayed(
             wants=negotiation.wants,
             object_format=negotiation.object_format,
             cold=negotiation.cold,
+            unlisted=negotiation.unlisted,
         )
         relayed = relay_fetch(ctx, resp, fetch)
     async for piece in relayed:

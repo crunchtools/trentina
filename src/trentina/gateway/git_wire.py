@@ -523,16 +523,16 @@ def strip_fetch_request(body: bytes, protocol: str | None) -> bytes:
     ``sideband-all`` taken out, so the forge never sees them.
 
     Under v2 they are argument or capability lines and the pkt-lines are
-    dropped. Under v0 and v1 they are capabilities on the first ``want``
-    line, and are removed from it. Every length is recomputed, and every
-    other pkt-line is passed on byte for byte.
+    dropped. Under v0 and v1 they are capabilities on a ``want`` line, and
+    are removed from every one: git sends them on the first, but upload-pack
+    honours a capability on any. Every length is recomputed, and every other
+    pkt-line is passed on byte for byte.
 
     Raises:
         ValueError: the body is not pkt-lines end to end.
     """
     v2 = protocol == PROTOCOL_V2
     out = bytearray()
-    first_want = True
     for packet in pkt_lines(body):
         if isinstance(packet, int):
             out += _wire(packet)
@@ -542,8 +542,7 @@ def strip_fetch_request(body: bytes, protocol: str | None) -> bytes:
             verb = line.partition(b" ")[0]
             if verb in _REQUEST_STRIPPED:
                 continue
-        elif first_want and line.startswith(b"want "):
-            first_want = False
+        elif line.startswith(b"want "):
             fields = line.split(b" ")
             kept = [f for f in fields if f not in _V0_DROPPED_CAPABILITIES]
             kept = [f for f in kept if f.partition(b"=")[0] != b"packfile-uris"]
@@ -556,7 +555,9 @@ def strip_fetch_request(body: bytes, protocol: str | None) -> bytes:
 
 
 def _want_fields(body: bytes, protocol: str | None) -> tuple[list[bytes], list[bytes]]:
-    """The oids of the ``want`` lines, and the first v0 want line's capabilities."""
+    """The oids of the ``want`` lines, and the capabilities v0 want lines carry.
+
+    Every want line's, as upload-pack reads them, not only the first's."""
     wants: list[bytes] = []
     capabilities: list[bytes] = []
     for packet in pkt_lines(body):
@@ -567,15 +568,15 @@ def _want_fields(body: bytes, protocol: str | None) -> tuple[list[bytes], list[b
             continue
         if not _OID_RE.fullmatch(fields[1]):
             raise ValueError("a want that is not an object id")
-        if not wants and protocol != PROTOCOL_V2:
-            capabilities = fields[2:]
+        if protocol != PROTOCOL_V2:
+            capabilities += fields[2:]
         wants.append(fields[1])
     return wants, capabilities
 
 
 def wants(body: bytes, protocol: str | None) -> list[str]:
-    """The hex object ids of the request's ``want`` lines, in order, the v0
-    first line's capabilities left off.
+    """The hex object ids of the request's ``want`` lines, in order, the
+    capabilities v0 lines carry left off.
 
     Raises:
         ValueError: not pkt-lines, or a ``want`` that does not carry an object id.
@@ -697,7 +698,7 @@ def is_cold_fetch(body: bytes, protocol: str | None) -> bool:
 def negotiated_sideband(body: bytes, protocol: str | None) -> bool:
     """Whether the response carries its pack in side-band.
 
-    v2 always does. v0 and v1 do when the first ``want`` line asks for
+    v2 always does. v0 and v1 do when a ``want`` line asks for
     ``side-band-64k``; a request that does not is refused by the caller
     (``sideband``), as git itself never sends one.
     """
