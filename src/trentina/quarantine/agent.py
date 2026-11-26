@@ -432,7 +432,7 @@ async def _call_gemini(
             "SECURITY: canary token leaked in Q-Agent response — Q-Agent compromise detected"
         )
 
-    parsed = conform(raw, response_schema, ENUM_FALLBACKS)
+    parsed = conform(_drop_malformed_pieces(raw), response_schema, ENUM_FALLBACKS)
     if not isinstance(parsed, dict):
         raise MalformedResponseError("$ is not object")
 
@@ -572,6 +572,36 @@ def _risk_of(detection: dict[str, Any]) -> str:
     """Turn 1's risk level, reduced to ``RISK_LEVELS``; off the set is high."""
     risk = detection.get("risk_level")
     return risk if risk in RISK_LEVELS else "high"
+
+
+def _drop_malformed_pieces(raw: Any) -> Any:
+    """``raw`` without a ``flagged_pieces`` that is not a list of integers.
+
+    The field only places a finding, so a malformed one is dropped rather than
+    raised on: the verdict it rides on stands, and its reader flags every piece.
+    """
+    if isinstance(raw, dict) and "flagged_pieces" in raw:
+        pieces = raw["flagged_pieces"]
+        if not isinstance(pieces, list) or not all(
+            isinstance(n, int) and not isinstance(n, bool) for n in pieces
+        ):
+            raw = {k: v for k, v in raw.items() if k != "flagged_pieces"}
+    return raw
+
+
+def flagged_pieces(detection: dict[str, Any], count: int) -> frozenset[int] | None:
+    """The 1-based pieces of ``count`` a flagged detection names, or None.
+
+    None, so every piece is flagged, unless the answer names at least one piece
+    and every one it names exists. The pieces it does not name are not cleared
+    by this: the reader judges each again on its own (#932).
+    """
+    pieces = detection.get("flagged_pieces")
+    if not isinstance(pieces, list) or not pieces:
+        return None
+    if not all(isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= count for n in pieces):
+        return None
+    return frozenset(pieces)
 
 
 def extraction_briefing(detection: dict[str, Any] | None) -> str:

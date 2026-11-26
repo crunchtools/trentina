@@ -3,7 +3,8 @@
 The transport tests drive real git through the route; these feed
 ``GitJudge`` objects directly, so each rule of the grouping is pinned on its
 own: L1 and L2 on every unit, a suspicious score judged alone at L3, a clean
-group credited to each unit, a flagged group debited to each unit, the
+group credited to each unit, a flagged group debited to the pieces L3 names
+(every unit when it names none) with the rest judged again alone, the
 quota as a gap, and a second judging of the same text served from the cache.
 """
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import hashlib
+import re
 import threading
 import time
 from typing import Any
@@ -23,7 +25,10 @@ from trentina.gateway import git_judge
 from trentina.l1.pipeline import PipelineResult, PipelineStats
 from trentina.l1.shadows import ShadowStats
 from trentina.quarantine import quota
+from trentina.quarantine.agent import _drop_malformed_pieces, flagged_pieces
 from trentina.quarantine.classifier import ClassifierResult
+from trentina.quarantine.prompts import DETECTION_RESPONSE_SCHEMA, ENUM_FALLBACKS
+from trentina.quarantine.schema import conform
 from trentina.unpack.git_pack import PackObject
 
 from . import git_harness as harness
@@ -33,6 +38,8 @@ L1_MARK = "L1-PLANTED-SHADOW"
 L3_MARK = "L3-PLANTED-INSTRUCTION"
 BORDER = "BORDERLINE-TEXT"
 HALF_A, HALF_B = "FIRST-HALF-OF-IT", "SECOND-HALF-OF-IT"
+BLAME_MARK = "BLAME-THE-PIECE-BEFORE-ME"
+_PIECE = re.compile(r"^----- piece (\d+) of \d+ -----$", re.MULTILINE)
 
 
 class Layers:
@@ -42,6 +49,10 @@ class Layers:
         self.screened: list[str] = []
         self.asked: list[str] = []
         self.quota = quota
+        # None: answers name no piece. "honest": the pieces holding the mark,
+        # and a planted ``BLAME_MARK`` piece names a sibling instead of itself.
+        # Anything else is sent as ``flagged_pieces`` verbatim.
+        self.names: Any = None
 
     async def screen(self, content: str, *, source: str) -> Screened:
         self.screened.append(content)
@@ -67,8 +78,18 @@ class Layers:
         self.asked.append(text)
         if self.quota:
             return {"injection_detected": False, "l3_unavailable": True, "l3_quota": True}
-        flagged = L3_MARK in text or (HALF_A in text and HALF_B in text)
-        return {"injection_detected": flagged, "risk_level": "high" if flagged else "none"}
+        flagged = L3_MARK in text or BLAME_MARK in text or (HALF_A in text and HALF_B in text)
+        answer = {"injection_detected": flagged, "risk_level": "high" if flagged else "none"}
+        if flagged and self.names == "honest":
+            parts = _PIECE.split(text)
+            pieces = [parts[i + 1] for i in range(1, len(parts), 2)] if len(parts) > 1 else [text]
+            named = [n for n, piece in enumerate(pieces, 1) if L3_MARK in piece]
+            # The planted piece steers the judge onto a neighbour.
+            named += [n % len(pieces) + 1 for n, p in enumerate(pieces, 1) if BLAME_MARK in p]
+            answer["flagged_pieces"] = named
+        elif flagged and self.names is not None:
+            answer["flagged_pieces"] = self.names
+        return answer
 
 
 @pytest.fixture(autouse=True)
@@ -686,3 +707,81 @@ async def test_a_large_object_cancelled_mid_read_is_a_deadline_gap_and_its_late_
     assert not outcome.flagged
     assert judge.stats["units"] == 0, "the late chunks were never added"
     assert not git_judge._memory, "no verdict was cached for the object"
+
+
+async def test_a_flagged_group_debits_only_the_pieces_l3_names(layers: Layers) -> None:
+    layers.names = "honest"
+    bad = _blob(f"{L3_MARK}\n")
+    good = [_blob(f"ordinary file number {n}\n") for n in range(3)]
+    judge = await _judged(bad, *good)
+    assert _flagged(judge) == {bad.oid: "L3"}
+    assert judge.outcome().pending == 0
+    alone = [asked for asked in layers.asked if not _PIECE.search(asked)]
+    assert sorted(alone) == sorted(blob.content.decode() for blob in good), (
+        "each piece L3 did not name is judged again alone, never cleared by the group"
+    )
+
+
+async def test_a_piece_that_names_its_sibling_is_still_flagged_on_its_own_read(
+    layers: Layers,
+) -> None:
+    layers.names = "honest"
+    planted = _blob(f"{BLAME_MARK}\n")
+    good = [_blob(f"ordinary file number {n}\n") for n in range(3)]
+    judge = await _judged(planted, *good)
+    flagged = _flagged(judge)
+    assert flagged.get(planted.oid) == "L3", "the planted piece is judged alone and flagged"
+    assert f"{BLAME_MARK}\n" in layers.asked, "read alone, not cleared by the group"
+    assert len(flagged) == 2, "the sibling it named is flagged too: a false positive, not a pass"
+
+
+@pytest.mark.parametrize(("solo_max", "calls", "flagged"), [(3, 4, 1), (2, 1, 4)])
+async def test_a_group_leaving_more_than_the_solo_cap_unnamed_is_debited_whole(
+    layers: Layers, monkeypatch: pytest.MonkeyPatch, solo_max: int, calls: int, flagged: int
+) -> None:
+    monkeypatch.setattr(git_judge, "L3_SOLO_MAX", solo_max)
+    layers.names = "honest"
+    bad = _blob(f"{L3_MARK}\n")
+    good = [_blob(f"ordinary file number {n}\n") for n in range(3)]
+    judge = await _judged(bad, *good)
+    assert len(layers.asked) == calls, "three unnamed units: alone at the cap, whole past it"
+    assert len(_flagged(judge)) == flagged
+    assert bad.oid in _flagged(judge)
+
+
+@pytest.mark.parametrize("names", [[], [0], [5], [1, 9], ["1"], [True]])
+async def test_an_answer_naming_no_real_piece_flags_the_whole_group(
+    layers: Layers, names: list[Any]
+) -> None:
+    layers.names = names
+    bad = _blob(f"{L3_MARK}\n")
+    good = [_blob(f"ordinary file number {n}\n") for n in range(3)]
+    judge = await _judged(bad, *good)
+    assert set(_flagged(judge)) == {blob.oid for blob in (bad, *good)}
+    assert len(layers.asked) == 1
+
+
+@pytest.mark.parametrize(
+    ("pieces", "kept"),
+    [([2, 1], [2, 1]), ([], []), ("1", None), ([1, "2"], None), ([True], None), (None, None)],
+)
+def test_a_malformed_flagged_pieces_is_dropped_and_the_verdict_stands(
+    pieces: Any, kept: list[int] | None
+) -> None:
+    raw = {
+        "injection_detected": True,
+        "risk_level": "high",
+        "summary": "s",
+        "flagged_pieces": pieces,
+    }
+    parsed = conform(_drop_malformed_pieces(raw), DETECTION_RESPONSE_SCHEMA, ENUM_FALLBACKS)
+    assert parsed["injection_detected"] is True
+    assert parsed.get("flagged_pieces") == kept
+
+
+@pytest.mark.parametrize(
+    ("pieces", "named"),
+    [([2], {2}), ([1, 3, 3], {1, 3}), ([], None), ([4], None), ([0], None), (None, None)],
+)
+def test_flagged_pieces_names_only_pieces_that_exist(pieces: Any, named: set[int] | None) -> None:
+    assert flagged_pieces({"flagged_pieces": pieces}, 3) == named

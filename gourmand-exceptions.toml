@@ -1350,6 +1350,13 @@ classification = "gourmand_bug"
 
 [[exceptions]]
 check = "single_use_helpers"
+path = "tests/test_git_judge.py"
+pattern = "_flagged"
+justification = "Not single-use: eleven assertions across the module's tests call it, verified by grep. The same miscount as tests/test_git_judging.py _flagged."
+classification = "gourmand_bug"
+
+[[exceptions]]
+check = "single_use_helpers"
 path = "src/trentina/gateway/git_fetch.py"
 pattern = "_header"
 justification = "The shape check on the reader child's untrusted output (kind, object id, offset, length against the inflated limit), a security boundary with its own unit tests in tests/test_git_pack_worker.py, which this check does not count as callers. Inlined, _objects would mix the check with the frame loop."
