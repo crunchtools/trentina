@@ -139,6 +139,27 @@ def test_the_wrong_argument_count_exits_2(tmp_path: Path) -> None:
     assert proc.stdout == b""
 
 
+def test_running_out_of_memory_is_refused_as_too_large(tmp_path: Path) -> None:
+    probe = (
+        "import sys\n"
+        "from trentina.unpack import git_pack_worker as w\n"
+        "def starve(self, piece):\n"
+        "    raise MemoryError\n"
+        "w.PackReader.feed = starve\n"
+        f"sys.exit(w.main(['w', 'sha1', '1', '1', '1', '7', {str(tmp_path)!r}]))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", probe],
+        input=b"PACK",
+        capture_output=True,
+        env=child.environment(),
+        check=False,
+        timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout == b"refused too_large\n"
+
+
 def test_the_child_sets_its_own_cpu_and_memory_limits(tmp_path: Path) -> None:
     """Read back from inside a child run as the gateway runs it: the limits
     are the child's own, set before the first byte of the pack is read."""
@@ -178,6 +199,7 @@ class FakeJudge:
         self.unread: dict[str, str] = {}
         self.finished = 0
         self.closed = 0
+        self.expires_at: float | None = None
 
     async def add(self, obj: PackObject) -> None:
         self.submitted.append(obj)
@@ -331,7 +353,7 @@ async def test_a_pack_over_the_grants_cap_is_named_unjudged(repo: Path, tmp_path
     await feeder.finish()
     assert feeder.refused == "too_large"
     assert judge.finished == 0 and judge.closed == 1
-    named = git_fetch._named(cast("git_judge.GitJudge", _NoOutcome()), feeder.refused, 0)
+    named = git_fetch._named(cast("git_judge.GitJudge", _NoOutcome()), feeder.refused, 0, 0)
     assert named == [git_wire.progress("Trentina: unjudged pack (too_large)")]
 
 

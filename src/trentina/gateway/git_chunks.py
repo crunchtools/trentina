@@ -163,7 +163,7 @@ def _whole_key(stored: bytes, path: Path) -> bytes:
     return stored[:KEY_BYTES]
 
 
-def chunk_blob(blob: bytes, key: bytes) -> list[Chunk]:
+def chunk_blob(blob: bytes | bytearray, key: bytes) -> list[Chunk]:
     """Cut ``blob`` into chunks, each with its lead-in. An empty blob has none."""
     mac_key = key if len(key) <= 64 else hashlib.sha256(key).digest()
     cuts = _cuts(blob, mac_key)
@@ -181,7 +181,7 @@ def chunk_blob(blob: bytes, key: bytes) -> list[Chunk]:
     return chunks
 
 
-def _cuts(blob: bytes, mac_key: bytes) -> list[int]:
+def _cuts(blob: bytes | bytearray, mac_key: bytes) -> list[int]:
     """End offsets of the chunks, the last being ``len(blob)``."""
     cuts: list[int] = []
     begin = 0
@@ -213,12 +213,12 @@ def _cuts(blob: bytes, mac_key: bytes) -> list[int]:
     return cuts
 
 
-def _selected(line: bytes, mac_key: bytes) -> bool:
+def _selected(line: bytes | bytearray, mac_key: bytes) -> bool:
     digest = hashlib.blake2b(line, key=mac_key, digest_size=4).digest()
     return int.from_bytes(digest, "big") & _SELECT_MASK == 0
 
 
-def _boundary(blob: bytes, begin: int, cut: int) -> int:
+def _boundary(blob: bytes | bytearray, begin: int, cut: int) -> int:
     """``cut`` moved back off a UTF-8 continuation byte, never to ``begin``."""
     point = cut
     while point > begin + 1 and point < len(blob) and blob[point] >> 6 == _UTF8_CONT_PREFIX:
@@ -226,7 +226,7 @@ def _boundary(blob: bytes, begin: int, cut: int) -> int:
     return point if point > begin else cut
 
 
-def _lead_in(blob: bytes, prev_start: int, prev_end: int) -> str:
+def _lead_in(blob: bytes | bytearray, prev_start: int, prev_end: int) -> str:
     """The last ``LEAD_TOKENS`` tokens of the chunk ``[prev_start, prev_end)``.
 
     ``LEAD_BYTES`` back, then earlier if whitespace is within ``LEAD_BACK``

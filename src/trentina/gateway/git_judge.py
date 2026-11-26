@@ -62,6 +62,7 @@ from ..unpack.git_pack import (
     OBJ_TAG,
     OBJ_TREE,
     PackObject,
+    Payload,
     commit_tree,
     is_binary,
     render_text,
@@ -70,7 +71,7 @@ from ..unpack.git_pack import (
 )
 from ..unpack.scan import read_binary
 from .context import profile_context
-from .git_chunks import TOKEN_BYTES, Chunk, chunk_blob, estimate_tokens
+from .git_chunks import MAX_CHUNK, TOKEN_BYTES, Chunk, chunk_blob, estimate_tokens
 from .service import judge_of
 from .verdict_cache import _cache_key
 
@@ -116,9 +117,29 @@ a pack. Past it the fetch stops being judged and its pack is named unjudged
 
 MAX_TREE_BYTES = 64 * 1024 * 1024
 """Parsed tree entries kept until the pack ends, to find the tip, counted as
-the memory they take (``_held``), not the tree objects' bytes. A tree past it is
-unjudged (``backlog``) and the tip walk stops at it; its blobs are still judged
-as they arrive, only not again whole."""
+the memory they take (``_held``), not the tree objects' bytes. A tree past it
+is still judged by its names, only its entries are not kept: if the tip walk
+reaches it, the tree is unjudged (``backlog``) and its files are judged as they
+arrive, only not again whole."""
+
+MAX_TREE_PARSE_BYTES = 1024 * 1024
+"""Largest tree object parsed. Reading one costs about 750 bytes of memory per
+entry (the entry, then its unit) and an entry is at least 29 bytes, so 1 MiB
+holds to about 27 MB however it is spelled, where ``MAX_OBJECT_BYTES`` would
+hold gigabytes. Past it the tree is unjudged (``too_large``) and its names are
+not read; its blobs are still judged as they arrive."""
+
+MAX_NAME_CHARS = MAX_CHUNK
+"""Longest tree entry or ref name judged as one unit. A longer one is chunked
+as a text blob is, so no single L2 scan or L3 call reads more than a chunk of
+a name."""
+
+_UNIT_OVERHEAD = 512
+"""What a unit takes besides its strings, counted against ``MAX_BACKLOG_BYTES``:
+the ``Unit`` (48), its ``__dict__`` (152), its empty ``oids`` set (216), and its
+share of ``_units`` and the queue (about 50). Measured with ``tracemalloc`` over
+20000 name units, which took about 565 bytes each with their strings at about
+95; rounded up for the sets of units more than one object shares."""
 
 SCREENERS = 2
 """Units screened at once by one fetch: the L2 gate's own width."""
@@ -199,7 +220,7 @@ def verdict_ttl() -> float:
     return VERDICT_TTL if hours is None else min(VERDICT_TTL, hours * 3600.0)
 
 
-def _held(value: str | bytes | None) -> int:
+def _held(value: str | Payload | None) -> int:
     """The memory a held string takes, header included: a non-ASCII ``str``
     is up to four bytes a character, and a small one mostly header."""
     return 0 if value is None else sys.getsizeof(value)
@@ -218,7 +239,7 @@ class Unit:
     whole: bool = False
     screened: Screened | None = None
     #: A binary blob's bytes: read by the unpack stage before it is screened.
-    binary: bytes | None = None
+    binary: Payload | None = None
     #: What this unit counts against ``MAX_BACKLOG_BYTES``, fixed when queued.
     held: int = 0
     #: L1's or L2's flag, carried to L3: every layer reads the unit, and a
@@ -231,8 +252,15 @@ class Unit:
 
     @property
     def size(self) -> int:
-        """The memory its text and bytes take, what ``MAX_BACKLOG_BYTES`` bounds."""
-        return _held(self.text) + _held(self.lead_in) + _held(self.binary)
+        """The memory it takes, what ``MAX_BACKLOG_BYTES`` bounds: its text,
+        bytes and key, and the ``_UNIT_OVERHEAD`` around them."""
+        return (
+            _held(self.text)
+            + _held(self.lead_in)
+            + _held(self.binary)
+            + _held(self.key)
+            + _UNIT_OVERHEAD
+        )
 
 
 @dataclass
@@ -261,6 +289,7 @@ class _Read:
     encoding: str | None = None
     tree: list[tuple[str, str, str]] | None = None
     tree_held: int = 0  # the memory ``tree`` takes, measured where it was parsed
+    unparsed: bool = False  # a tree past ``MAX_TREE_PARSE_BYTES``, left unread
     commit_tree: str | None = None
     tag_target: str | None = None
     small: bool = False  # a text blob small enough to keep for the tip's whole
@@ -284,7 +313,9 @@ class GitJudge:
     queues those not already decided. ``start`` runs the judging as a task of
     its own, outside the request, so a fetch delivered under ``flag`` before
     its last verdict goes on being judged, its verdicts warming the cache and
-    landing as ``detections`` rows. ``deadline`` bounds that task.
+    landing as ``detections`` rows. ``deadline`` bounds that task; once it has
+    passed, or the task has ended any other way, what is added settles at once,
+    unjudged.
 
     Args:
         profile: whose judge, thresholds and quota the judging runs under;
@@ -329,10 +360,15 @@ class GitJudge:
         self._trees: dict[str, list[tuple[str, str, str]]] = {}
         self._commit_trees: dict[str, str] = {}
         self._tag_targets: dict[str, str] = {}
-        self._small_text: dict[str, bytes] = {}
+        self._small_text: dict[str, Payload] = {}
         self._small_bytes = 0
         self._tree_bytes = 0
+        #: Trees whose entries were not kept (the map was full, or too large to parse).
+        self._dropped: set[str] = set()
         self._task: asyncio.Task[None] | None = None
+        self._expires_at: float | None = None
+        #: The gap for what is added once the judging task is over; None while it runs.
+        self._over: str | None = None
         self._screening = 0
         self._closed = False
         self._mark = get_config().git_suspicious
@@ -419,6 +455,9 @@ class GitJudge:
             return None
         state = ObjectState(obj.kind, _SOURCE_TYPE[obj.kind])
         self._objects[obj.oid] = state
+        if self._over is not None:
+            state.gap = self._over  # nothing will judge it: do not read it
+            return None
         return state
 
     @staticmethod
@@ -432,12 +471,17 @@ class GitJudge:
             self._commit_trees[obj.oid] = read.commit_tree
         if read.tag_target is not None:
             self._tag_targets[obj.oid] = read.tag_target
+        if read.unparsed:
+            state.gap = "too_large"
+            self._dropped.add(obj.oid)
+            return []
         if read.tree is not None:
             if self._tree_bytes + read.tree_held > MAX_TREE_BYTES:
-                state.gap = "backlog"
-                return []
-            self._tree_bytes += read.tree_held
-            self._trees[obj.oid] = read.tree
+                # Its names are still judged; only the tip walk loses it.
+                self._dropped.add(obj.oid)
+            else:
+                self._tree_bytes += read.tree_held
+                self._trees[obj.oid] = read.tree
         if read.small:
             if self._small_bytes + (held := _held(obj.content)) <= MAX_TIP_BYTES:
                 self._small_text[obj.oid] = obj.content
@@ -474,7 +518,8 @@ class GitJudge:
                 continue
             state = ObjectState("ref", source_type)
             self._objects[oid] = state
-            self._add(self._unit(name, "", source_type), oid, state)
+            for unit in self._name_units(name, source_type):
+                self._add(unit, oid, state)
         return ids
 
     def finish_pack(self) -> None:
@@ -493,16 +538,17 @@ class GitJudge:
             state = self._objects.get(oid)
             if state is None:
                 continue
-            unit = self._unit(text, "", "git_blob", whole=True)
+            unit = self._unit(text, "", "git_blob", "git_whole")
             self._add(unit, oid, state)
         self._small_text.clear()
-        self._small_bytes = 0
         self._trees.clear()
-        self._tree_bytes = 0
+        self._dropped.clear()
+        self._small_bytes = self._tree_bytes = 0
 
     def abandon(self) -> None:
         """Stop judging now: what is still out is never judged or cached."""
         if self._task is not None:
+            self._over = self._over or "deadline"
             self._task.cancel()
 
     def full(self) -> bool:
@@ -515,6 +561,9 @@ class GitJudge:
         self._queue.put_nowait(None)
 
     def _add(self, unit: Unit, oid: str, state: ObjectState) -> None:
+        if self._over is not None:
+            state.gap = state.gap or self._over
+            return
         existing = self._units.get(unit.key)
         if existing is not None:
             # The same text elsewhere in this fetch: one judgement, credited to both.
@@ -542,15 +591,23 @@ class GitJudge:
         self._settled.clear()
         self._queue.put_nowait(unit)
 
-    def _unit(self, text: str, lead_in: str, source_type: str, *, whole: bool = False) -> Unit:
-        kind = "git_whole" if whole else "git"
+    def _unit(
+        self,
+        text: str,
+        lead_in: str,
+        source_type: str,
+        kind: str = "git",
+    ) -> Unit:
+        """A unit keyed under ``kind``: ``git``, ``git_whole`` for a tip file
+        judged whole, or ``git_binary``, whose material is a digest any text
+        could spell and whose verdict is of bytes, not of that text."""
         material = f"{len(lead_in)}:{lead_in}{text}"
         return Unit(
             key=_cache_key(self.profile, kind, material, self._judge),
             text=text,
             lead_in=lead_in,
             source_type=source_type,
-            whole=whole,
+            whole=kind == "git_whole",
         )
 
     def _read_object(self, obj: PackObject) -> _Read:
@@ -575,8 +632,12 @@ class GitJudge:
                 tag_target=None if target is None else target[0],
             )
         if obj.kind == OBJ_TREE:
+            if len(obj.content) > MAX_TREE_PARSE_BYTES:
+                return _Read([], unparsed=True)
             entries = tree_entries(obj.content, oid_len=self._oid_len)
-            names = [self._unit(name, "", "git_tree") for _m, name, _o in entries]
+            names = [
+                unit for _m, name, _o in entries for unit in self._name_units(name, "git_tree")
+            ]
             held = sys.getsizeof(entries) + sum(
                 sys.getsizeof(entry) + sum(map(sys.getsizeof, entry)) for entry in entries
             )
@@ -584,12 +645,19 @@ class GitJudge:
         if is_binary(obj.content):
             # Read as anywhere else (images, PDFs, archives, office files) or
             # for its strings; keyed by its bytes, since that is what was read.
-            unit = self._unit(f"binary:{_digest(obj.content)}", "", "git_blob")
+            unit = self._unit(f"binary:{_digest(obj.content)}", "", "git_blob", "git_binary")
             unit.binary = obj.content
             return _Read([unit])
         small = len(obj.content) <= get_config().whole_tokens * TOKEN_BYTES
         chunks = chunk_blob(obj.content, self._secret)
         return _Read([self._unit(c.text, c.lead_in, "git_blob") for c in chunks], small=small)
+
+    def _name_units(self, name: str, source_type: str) -> list[Unit]:
+        """A name's units: one, or its chunks when it is past ``MAX_NAME_CHARS``."""
+        if len(name) <= MAX_NAME_CHARS:
+            return [self._unit(name, "", source_type)]
+        chunks = chunk_blob(name.encode("utf-8", "replace"), self._secret)
+        return [self._unit(c.text, c.lead_in, source_type) for c in chunks]
 
     def _text_units(self, text: str, source_type: str) -> list[Unit]:
         chunks: list[Chunk] = chunk_blob(text.encode("utf-8", "replace"), self._secret)
@@ -610,7 +678,7 @@ class GitJudge:
         for want in self._wants:
             target = self._peel(want)
             # A tree to walk, or a blob wanted by id: a lazy fetch's checkout.
-            if target in self._trees:
+            if target in self._trees or target in self._dropped:
                 roots.append(target)
             else:
                 tips.add(target)
@@ -620,6 +688,11 @@ class GitJudge:
             if tree in seen:
                 continue
             seen.add(tree)
+            if tree in self._dropped:
+                # Its entries were not kept: its tip files cannot be named.
+                if (dropped := self._objects.get(tree)) is not None:
+                    dropped.gap = dropped.gap or "backlog"
+                continue
             for mode, _name, oid in self._trees.get(tree, ()):
                 if mode.startswith("40"):
                     roots.append(oid)
@@ -632,19 +705,26 @@ class GitJudge:
     def start(self, deadline: float) -> asyncio.Task[None]:
         """Run the judging as its own task, bounded by ``deadline`` seconds."""
         if self._task is None:
-            self._task = asyncio.ensure_future(self._run(deadline))
+            self._expires_at = asyncio.get_running_loop().time() + deadline
+            self._task = asyncio.ensure_future(self._run(self._expires_at))
             _BACKGROUND.add(self._task)
             self._task.add_done_callback(_BACKGROUND.discard)
         return self._task
 
-    async def _run(self, deadline: float) -> None:
+    @property
+    def expires_at(self) -> float | None:
+        """The event loop time (``loop.time()``) the judging deadline passes,
+        None before ``start``."""
+        return self._expires_at
+
+    async def _run(self, expires_at: float) -> None:
         with (
             profile_context(self.profile),
             background_scans(),
             git_quota(self.grant.l3_daily_quota),
         ):
             try:
-                async with asyncio.timeout(deadline):
+                async with asyncio.timeout_at(expires_at):
                     await self._drain()
             except TimeoutError:
                 self._expire("deadline")
@@ -652,6 +732,8 @@ class GitJudge:
                 logger.error("git judge: judging failed: %s at %s", exc_kind(exc), exc_where(exc))
                 self._expire("failed")
             finally:
+                # Over, however it ended: nothing added from now on is judged.
+                self._over = self._over or "deadline"
                 self._settled.set()
                 flush_store()
 
@@ -921,7 +1003,9 @@ class GitJudge:
             logger.error("git judge: detection row lost: %s at %s", exc_kind(exc), exc_where(exc))
 
     def _expire(self, gap: str) -> None:
-        """Everything still out is unjudged, for ``gap``."""
+        """Everything still out is unjudged, for ``gap``, and so is all that
+        is added later."""
+        self._over = gap
         for unit in list(self._units.values()):
             self._settle(unit, {"gap": gap})
 
@@ -1058,7 +1142,7 @@ def _group_text(units: list[Unit]) -> str:
     return units[0].read if len(units) == 1 else "\n".join(pieces)
 
 
-def _digest(payload: bytes) -> str:
+def _digest(payload: Payload) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 

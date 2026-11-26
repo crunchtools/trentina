@@ -23,6 +23,7 @@ import random
 import shutil
 import subprocess
 import time
+import tracemalloc
 import zlib
 from typing import TYPE_CHECKING, Any
 
@@ -655,7 +656,7 @@ def test_ref_delta_base_later_in_pack(scratch: Path) -> None:
     b.full(3, b"hello\n")
     pack = b.build()
     got = run_reader(pack, fmt=fmt, maxpiece=5)
-    assert {o.content for o in got} == {b"hello\n", b"hello\n!"}
+    assert {bytes(o.content) for o in got} == {b"hello\n", b"hello\n!"}
     assert agree(scratch, fmt, pack) in {"both accept", "both refuse"}
 
 
@@ -732,6 +733,58 @@ def test_inflation_bomb() -> None:
     big = PackBuilder()
     big.raw(entry_head(3, 200 * 1024 * 1024) + bomb)
     assert refusal(big.build(), limits=Limits(max_inflated=1024 * 1024)) == "too_large"
+
+
+def test_an_object_is_not_held_twice_while_it_inflates() -> None:
+    mib = 1024 * 1024
+    size = 32 * mib
+    blob = PackBuilder()
+    blob.full(3, bytes(size))
+    pack = blob.build()
+    tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        base = tracemalloc.get_traced_memory()[0]
+        objects = run_reader(pack, maxpiece=64)
+        peak = tracemalloc.get_traced_memory()[1] - base
+    finally:
+        tracemalloc.stop()
+    assert len(objects) == 1
+    assert len(objects[0].content) == size
+    assert peak < 1.5 * size
+
+
+def _fan_out(kind: str, count: int = 40) -> tuple[bytes, int]:
+    """One base and ``count`` deltas on it, and what the targets alone cost."""
+    base = bytes(range(256)) * 4
+    pack = PackBuilder()
+    oid = object_id("blob", base)
+    if kind == "ref_before":
+        bodies = [copy_all_then(len(base), bytes([i])) for i in range(count)]
+        for body in bodies:
+            pack.ref(oid, body)
+        pack.full(3, base)
+    else:
+        index = pack.full(3, base)
+        bodies = [copy_all_then(len(base), bytes([i])) for i in range(count)]
+        for body in bodies:
+            if kind == "ofs":
+                pack.ofs(index, body)
+            else:
+                pack.ref(oid, body)
+    targets = sum(len(body) + len(base) + 1 for body in bodies)
+    return pack.build(), len(base) + targets
+
+
+@pytest.mark.parametrize("kind", ["ofs", "ref_after", "ref_before"])
+def test_delta_fan_out_pays_for_every_base_read(kind: str, tmp_path: Path) -> None:
+    pack, targets = _fan_out(kind)
+    reads = 40 * 1024
+    spool = str(tmp_path)
+    assert refusal(pack, limits=Limits(max_inflated=targets), spool_dir=spool) == "too_large"
+    objects = run_reader(pack, limits=Limits(max_inflated=targets + reads), spool_dir=spool)
+    assert len(objects) == 41
+    assert refusal(pack, limits=Limits(max_inflated=targets + reads - 1)) == "too_large"
 
 
 def test_delta_target_bomb() -> None:

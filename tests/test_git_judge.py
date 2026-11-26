@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import gc
 import hashlib
 import re
 import threading
 import time
+import tracemalloc
 from typing import Any
 
 import pytest
@@ -933,3 +935,132 @@ def test_a_malformed_flagged_pieces_is_dropped_and_the_verdict_stands(
 )
 def test_flagged_pieces_names_only_pieces_that_exist(pieces: Any, named: set[int] | None) -> None:
     assert flagged_pieces({"flagged_pieces": pieces}, 3) == named
+
+
+# --- review findings (a1739) -----------------------------------------------
+
+
+def _text_spelling(binary: PackObject) -> PackObject:
+    """A text blob whose one chunk is exactly the material a binary is keyed by."""
+    return _blob(f"binary:{git_judge._digest(binary.content)}")
+
+
+def test_a_text_spelling_a_binarys_material_does_not_shadow_the_binary_in_one_fetch() -> None:
+    judge = _fresh()
+    binary = _binary(b"\x00\x01\x02 not text \x03" * 4)
+    text = _text_spelling(binary)
+    judge.submit(text)
+    judge.submit(binary)
+    assert len(judge._units) == 2, "the binary is its own unit, not credited to the text's"
+    held = [unit for unit in judge._units.values() if unit.binary is not None]
+    assert len(held) == 1 and held[0].oids == {binary.oid}
+    assert judge._objects[binary.oid].waiting == 1
+
+
+async def test_a_clean_verdict_for_text_spelling_a_binary_is_not_served_to_it() -> None:
+    binary = _binary(b"\x00\x01\x02 not text \x03" * 4)
+    text = _text_spelling(binary)
+    first = await _judged(text)
+    assert first.outcome().judged == 1 and git_judge._memory, "the text's verdict is cached"
+    second = _fresh()
+    second.submit(binary)
+    assert second.stats["cached"] == 0, "a text's verdict is not a binary's"
+    assert second._objects[binary.oid].waiting == 1
+    assert next(iter(second._units.values())).binary is not None
+
+
+async def test_an_object_added_after_the_judging_expired_is_unjudged_at_once() -> None:
+    judge = _fresh()
+    assert judge.expires_at is None
+    loop = asyncio.get_running_loop()
+    before = loop.time()
+    await judge.start(0.05)
+    assert judge.expires_at is not None and judge.expires_at >= before + 0.05
+    judge.close()
+    await asyncio.sleep(0.2)  # the task ran out of time or of work: nothing drains the queue now
+    late = _blob("an object the reader sent after the deadline\n")
+    judge.submit(late)
+    await judge.add(_blob("another, read through the lane\n" * 400))
+    judge.submit_names(["refs/heads/late"])
+    outcome = judge.outcome()
+    assert outcome.pending == 0
+    assert ("blob", late.oid, "deadline") in outcome.unjudged
+    assert {gap for _kind, _oid, gap in outcome.unjudged} == {"deadline"}
+    assert len(outcome.unjudged) == 3 and judge.stats["units"] == 0
+
+
+async def test_an_object_added_after_the_deadline_passed_mid_judging_is_unjudged(
+    layers: Layers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def slow(content: str, *, source: str) -> Screened:
+        await asyncio.sleep(5)
+        return await layers.screen(content, source=source)
+
+    monkeypatch.setattr(git_judge, "screen", slow)
+    judge = _fresh()
+    judge.submit(_blob("one still being screened\n"))
+    await judge.start(0.05)  # the deadline passes, the task is not given more work
+    late = _blob("arrives after the deadline\n")
+    judge.submit(late)
+    outcome = judge.outcome()
+    assert outcome.pending == 0 and ("blob", late.oid, "deadline") in outcome.unjudged
+
+
+async def test_a_tree_too_large_to_parse_is_unjudged_too_large_and_named(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(git_judge, "MAX_TREE_PARSE_BYTES", 64)
+    entries = b"".join(b"100644 f%d.txt\0" % n + bytes([n]) * 20 for n in range(20))
+    big = PackObject(oid="a" * 40, kind="tree", content=entries, offset=0)
+    judge = _fresh()
+    judge.submit(big)
+    await judge.add(big)  # the same through the thread path is a repeat: ignored
+    assert judge.outcome().unjudged == [("tree", "a" * 40, "too_large")]
+    assert judge.stats["units"] == 0 and not judge._trees
+
+
+async def test_a_full_tree_map_still_judges_names_and_only_the_tip_walk_loses_the_tree(
+    wholes: Wholes, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(git_judge, "MAX_TREE_BYTES", 0)  # no tree's entries are kept
+    tip, other = _blob("the file at the tip\n"), _blob("a file in an old tree\n")
+    tip_tree = _tree(("100644", "tip-name.txt", tip))
+    old_tree = _tree(("100644", "old-name.txt", other))
+    commit = _commit(tip_tree)
+    judge = await _fetched([commit.oid], commit, tip_tree, old_tree, tip, other)
+    for name in ("tip-name.txt", "old-name.txt"):
+        assert any(name in text for text in wholes.other), "names are judged: not a backlog gap"
+    assert wholes.whole == [], "the tip's files are not judged whole without the entries"
+    assert judge.outcome().unjudged == [("tree", tip_tree.oid, "backlog")]
+
+
+async def test_a_name_of_hundreds_of_kilobytes_is_chunked_into_bounded_units() -> None:
+    name = "".join(hashlib.sha256(b"%d" % n).hexdigest() for n in range(5000))  # 320 KB, no repeats
+    tree = _tree(("100644", name, _blob("x\n")))
+    judge = _fresh()
+    await judge.add(tree)
+    units = list(judge._units.values())
+    assert len(units) > 30
+    assert max(len(unit.text) for unit in units) <= git_judge.MAX_NAME_CHARS
+    refs = _fresh()
+    refs.submit_names([name])
+    assert len(refs._units) > 30
+    assert max(len(unit.text) for unit in refs._units.values()) <= git_judge.MAX_NAME_CHARS
+
+
+def test_the_backlog_is_charged_at_least_what_name_units_take() -> None:
+
+    judge = _fresh()
+    names = [f"file-{n:07d}" for n in range(5000)]
+    state = git_judge.ObjectState("tree", "git_tree")
+    gc.collect()
+    tracemalloc.start()
+    before = tracemalloc.get_traced_memory()[0]
+    for name in names:
+        for unit in judge._name_units(name, "git_tree"):
+            judge._add(unit, "a" * 40, state)
+    measured = tracemalloc.get_traced_memory()[0] - before
+    tracemalloc.stop()
+    assert len(judge._units) == len(names)
+    assert judge._backlog >= measured, "charged less than the units take"
+    assert judge._backlog <= measured * 1.5 + len(names) * 100, "and not wildly more"

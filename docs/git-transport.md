@@ -358,7 +358,11 @@ error. The reason is in the audit row.
 
 One `gateway_calls` row per HTTP request, written when it ends or is
 refused. A clone is two or three requests and a push three or four, so one
-git command is a short run of rows. `backend` is `git:<remote>`, `tool` is
+git command is a short run of rows. A judged fetch whose judging ends after its
+row was written, having found more than the row records (a late flag, the
+deadline, a late reader refusal, L3 unavailable), adds one `fetch_judged` row
+under the same `call_ref` with the final counts: rows are chained, never
+updated. `backend` is `git:<remote>`, `tool` is
 `fetch` or `push`, and `destination` is `owner/name`, lower-cased, with
 `destination_kind = git`. For a push the refs it named follow the
 repository, separated by spaces, within the field's 256 characters:

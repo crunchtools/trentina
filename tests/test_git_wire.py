@@ -533,6 +533,28 @@ class TestStripFetchRequest:
         )
         assert wants(out, None) == [ONE.decode(), TWO.decode()]
 
+    def test_v0_loses_the_capabilities_on_every_want(self) -> None:
+        # upload-pack honours a capability on any want line: thin-pack on the
+        # second want gave a thin pack (git 2.56.1).
+        body = (
+            pkt(b"want " + ONE + b" side-band-64k ofs-delta\n")
+            + pkt(b"want " + TWO + b" thin-pack sideband-all packfile-uris=https\n")
+            + b"0000"
+            + pkt(b"done\n")
+        )
+        out = strip_fetch_request(body, None)
+        assert out == (
+            pkt(b"want " + ONE + b" side-band-64k ofs-delta\n")
+            + pkt(b"want " + TWO + EOL)
+            + b"0000"
+            + pkt(b"done\n")
+        )
+        assert wants(out, None) == [ONE.decode(), TWO.decode()]
+
+    def test_v0_capabilities_on_a_later_want_are_read(self) -> None:
+        body = pkt(b"want " + ONE + EOL) + pkt(b"want " + TWO + b" side-band-64k\n") + b"0000"
+        assert negotiated_sideband(body, None)
+
     def test_a_request_with_nothing_to_strip_is_byte_identical(self) -> None:
         body = _fetch_v2(b"want " + ONE, b"done")
         assert strip_fetch_request(body, V2) == body
