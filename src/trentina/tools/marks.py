@@ -68,13 +68,14 @@ async def session_marks_clear(
     full = found[0] if session else None
     result = session_marks.clear_marks(profile=profile, session=full, everything=all)
     caller = current_caller.get()
+    # What was named, as constants: the arguments are the caller's text. The
+    # profiles cleared are in the result, read from the gateway's own state.
+    named = "all" if all else "+".join(k for k, v in (("profile", profile), ("session", full)) if v)
     logger.warning(
-        "session_marks_clear by %s%s: profile=%s session=%s all=%s; windows=%s sessions=%s",
+        "session_marks_clear by %s%s: named %s; windows=%s sessions=%s",
         scope.label,
         f" (federated {caller[0]}/{caller[1]})" if caller else "",
-        profile or "-",
-        full[:8] if full else "-",
-        all,
+        named,
         result["windows"],
         result["sessions"],
     )

@@ -129,7 +129,8 @@ class TestOperatorClears:
             await _clear(profile="alice")
         line = next(r.getMessage() for r in caplog.records if "session_marks_clear by" in r.message)
         assert line.startswith("session_marks_clear by op:")
-        assert "profile=alice" in line
+        assert "named profile;" in line
+        assert "'profile': 'alice'" in line
         assert "flagged_delivery" in line
         assert "tripped" in line
         assert "'remaining_seconds': 1740" in line
