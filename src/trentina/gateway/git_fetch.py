@@ -31,7 +31,7 @@ that the agent was not told about by object id:
 Every line the gateway writes on the side band is closed words and an object
 id, never a path or content: ``Trentina: flagged <kind> <oid> (<layer>,
 <risk>)``, ``Trentina: unjudged <kind> <oid> (<gap>)``, ``Trentina: unjudged tip
-files (<n> want-refs not in the last listing)``.
+files (<n> want-refs unanswered)``.
 """
 
 from __future__ import annotations
@@ -417,9 +417,9 @@ class Fetch:
     #: The request says clone: no ``have`` (``git_wire.is_cold_fetch``), or a
     #: filtered fetch of the listed tips. The pack header can say so too.
     cold: bool = False
-    #: ``want-ref`` names the last listing did not show: their tips' whole-file
-    #: pass cannot run, and the fetch says so.
-    unlisted: int = 0
+    #: How many ``want-ref`` lines the request has. Their tips are what the
+    #: forge's ``wanted-refs`` section answers, not what a listing showed.
+    want_refs: int = 0
 
 
 def new_call_ref() -> str:
@@ -647,14 +647,14 @@ _HEX = frozenset("0123456789abcdef")
 
 
 def _notices(refs: int, unlisted: int) -> list[str]:
-    """The lines for what the fetch's request and the last listing leave unjudged
-    or flagged, whatever the pack did: ref names flagged, tips whose files no
-    pass reads."""
+    """The lines for what the last listing flagged and the forge's answer left
+    unjudged, whatever the pack did: ref names flagged, and tips whose files
+    no pass reads."""
     lines = []
     if refs:
         lines.append(f"Trentina: flagged ref names in the last listing: {refs}")
     if unlisted:
-        lines.append(f"Trentina: unjudged tip files ({unlisted} want-refs not in the last listing)")
+        lines.append(f"Trentina: unjudged tip files ({unlisted} want-refs unanswered)")
     return lines
 
 
@@ -750,6 +750,8 @@ class _FetchRelay:
         self.feeder: _Feeder | None = None
         self.busy = False
         self.cold = fetch.cold
+        #: ``want-ref`` lines the forge's ``wanted-refs`` did not answer (``_wanted``).
+        self.unlisted = 0
         #: The pack's first bytes, held for its header before a slot is taken.
         self.head = bytearray()
         #: Pack bytes the forge has sent, for ``COLD_PACK_BYTES``.
@@ -768,10 +770,23 @@ class _FetchRelay:
         leaves them for the next fetch."""
         return _flagged_refs.pop((self.fetch.profile.name, self.fetch.slug), 0)
 
+    def _wanted(self) -> tuple[list[str], str]:
+        """The tips to judge whole, and the object format, once the pack starts.
+
+        A ``want-ref``'s tip is the id the forge's ``wanted-refs`` section gave
+        it: a listing can be stale, or lie. A ``want-ref`` the section did not
+        answer is counted in ``unlisted``, and named a gap."""
+        fetch, wanted = self.fetch, self.parser.wanted
+        self.unlisted = max(fetch.want_refs - len(wanted), 0)
+        wants = [*fetch.wants, *(oid for oid in wanted if oid not in fetch.wants)]
+        long_ids = any(len(oid) == 64 for oid in wanted)
+        return wants, "sha256" if long_ids else fetch.object_format
+
     def _start(self) -> _Feeder | None:
         """The judging of this fetch, or None when no slot is free: the pack
         then goes on unjudged, named ``busy``."""
         op, fetch = self.ctx.op, self.fetch
+        wants, object_format = self._wanted()
         slot = None if self.busy else _slots.take(fetch.profile.name, cold=self.cold)
         if slot is None:
             self.busy = True
@@ -786,13 +801,13 @@ class _FetchRelay:
                 source=fetch.source,
                 call_ref=op.call_ref,
                 chunk_secret=chunk_secret(),
-                wants=fetch.wants,
-                oid_len=_OID_BYTES.get(fetch.object_format, _DEFAULT_OID_BYTES),
+                wants=wants,
+                oid_len=_OID_BYTES.get(object_format, _DEFAULT_OID_BYTES),
             )
             config = get_config()
             config.ensure_perimeter_db_dir()
             reading = _Reading(
-                object_format=fetch.object_format,
+                object_format=object_format,
                 max_arrived=fetch.grant.max_judged_pack_bytes,
                 max_inflated=DEFAULT_LIMITS.max_inflated,
                 deadline=fetch.grant.judge_deadline,
@@ -902,8 +917,12 @@ class _FetchRelay:
         held = b"".join(self.tail)
         self.tail.clear()
         self.tail_bytes = 0
+        if self.busy and self.judge is not None:
+            # Promoted cold with none free: what was found before stands.
+            yield b"".join(_named(self.judge, BUSY, self._take_refs(), self.unlisted)) + held
+            return
         if self.busy:
-            notices = [progress(line) for line in _notices(self._take_refs(), self.fetch.unlisted)]
+            notices = [progress(line) for line in _notices(self._take_refs(), self.unlisted)]
             yield _unjudged(BUSY) + b"".join(notices) + held
             return
         if self.feeder is None or self.judge is None:
@@ -920,24 +939,24 @@ class _FetchRelay:
             _CLOSING.add(finishing)
             finishing.add_done_callback(_CLOSING.discard)
             yield b"".join(
-                _named(self.judge, self.feeder.refused, self._take_refs(), self.fetch.unlisted)
+                _named(self.judge, self.feeder.refused, self._take_refs(), self.unlisted)
             )
             yield progress("Trentina: still reading the pack; the rest is judged after delivery")
             yield held
             return
         await finishing
         await self.judge.wait(max(until - loop.time(), 0.0))
-        named = _named(self.judge, self.feeder.refused, self._take_refs(), self.fetch.unlisted)
+        named = _named(self.judge, self.feeder.refused, self._take_refs(), self.unlisted)
         yield b"".join(named) + held
 
     def settle(self) -> None:
         op = self.ctx.op
         self.settled = True
-        if self.busy:
+        if self.busy and self.judge is None:
             op.normalized = {
                 **dict.fromkeys(_COUNTS, "0"),
                 "git_pack": BUSY,
-                **({"git_unlisted": str(self.fetch.unlisted)} if self.fetch.unlisted else {}),
+                **({"git_unlisted": str(self.unlisted)} if self.unlisted else {}),
             }
             self.recorded = op.normalized
             op.flag_reason = "git_unjudged"
@@ -951,9 +970,9 @@ class _FetchRelay:
     def _account_on(self, op: Operation, judge: GitJudge) -> None:
         """Write the judging's account now on ``op``, the counts and the reason."""
         refused = self.feeder.refused if self.feeder is not None else None
-        op.normalized = self.recorded = _account(judge, refused, self.fetch.unlisted)
+        op.normalized = self.recorded = _account(judge, refused, self.unlisted)
         outcome = judge.outcome()
-        found = _found(outcome.flagged, outcome.unjudged or refused or self.fetch.unlisted)
+        found = _found(outcome.flagged, outcome.unjudged or refused or self.unlisted)
         op.flag_reason = found
         op.settle(Outcome.OK, found)
 
@@ -982,7 +1001,7 @@ class _FetchRelay:
         op, judge, feeder = self.ctx.op, self.judge, self.feeder
         if judge is None or feeder is None:
             return
-        if not _news(self.recorded or {}, _account(judge, feeder.refused, self.fetch.unlisted)):
+        if not _news(self.recorded or {}, _account(judge, feeder.refused, self.unlisted)):
             return
         if self.recorded is not None and not op.finished and op.outcome is Outcome.OK:
             self._account_on(op, judge)

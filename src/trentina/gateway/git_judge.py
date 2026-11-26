@@ -180,6 +180,7 @@ GAPS = frozenset(
         "l3_quota",
         "binary_unread",
         "backlog",
+        "busy",
         "deadline",
         "too_large",
         "failed",
@@ -546,9 +547,11 @@ class GitJudge:
         self._small_bytes = self._tree_bytes = 0
 
     def abandon(self) -> None:
-        """Stop judging now: what is still out is never judged or cached."""
+        """Stop judging now, the fetch having found no slot to go on in: what
+        is still out, and all that is added later, is unjudged (``busy``),
+        never judged or cached. What was found before stands."""
         if self._task is not None:
-            self._over = self._over or "deadline"
+            self._expire("busy")
             self._task.cancel()
 
     def full(self) -> bool:

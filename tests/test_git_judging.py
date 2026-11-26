@@ -1109,9 +1109,9 @@ def _relay(unlisted: int = 0) -> git_fetch._FetchRelay:
         slug="acme/widgets",
         v2=True,
         wants=[],
-        unlisted=unlisted,
     )
     relay = git_fetch._FetchRelay(cast("InTree", SimpleNamespace()), fetch)
+    relay.unlisted = unlisted
     relay.tail.append(b"THE-TAIL")
     relay.tail_bytes = len(b"THE-TAIL")
     return relay
@@ -1164,9 +1164,31 @@ class TestWhatIsNamedAtTheEnd:
         sent = await _released(relay)
         assert b"Trentina: unjudged pack (busy)" in sent
         assert b"Trentina: flagged ref names in the last listing: 2" in sent
-        assert b"Trentina: unjudged tip files (3 want-refs not in the last listing)" in sent
+        assert b"Trentina: unjudged tip files (3 want-refs unanswered)" in sent
         assert sent.endswith(b"THE-TAIL")
         assert not git_fetch._flagged_refs, "named once"
+
+
+class TestABusyPromotion:
+    async def test_what_was_found_before_it_is_named_and_recorded(self) -> None:
+        answer = _relay()
+        judge = answer.judge = _bare_judge()
+        judge.start(60.0)
+        judge._objects["1" * 40] = git_judge.ObjectState("blob", "git_blob", flagged=("L2", "high"))
+        judge.submit_names(["refs/heads/main"])  # still out when the slot is lost
+        answer.feeder = cast("git_fetch._Feeder", SimpleNamespace(refused=git_fetch.BUSY))
+        answer.busy = True
+        judge.abandon()
+        sent = await _released(answer)
+        assert b"Trentina: unjudged pack (busy)" in sent
+        assert f"Trentina: flagged blob {'1' * 40} (L2, high)".encode() in sent
+        assert b"pending" not in sent, "abandoned, so nothing is judged after delivery"
+        op = relay.Operation(answer.fetch.profile, backend="git:forge")
+        answer.ctx = cast("InTree", SimpleNamespace(op=op))
+        answer.settle()
+        assert op.reason == "git_flagged"
+        assert op.normalized is not None and op.normalized["git_flagged"] == "1"
+        assert op.normalized["git_pack"] == git_fetch.BUSY
 
 
 class _Silent:
@@ -1295,11 +1317,22 @@ class TestWantRef:
         assert fetches and fetches[-1] == [head], "the name resolved to the listed tip"
         assert await _slots_free()
 
-    async def test_a_want_ref_the_listing_did_not_show_is_named_a_gap(
-        self, judged: Any, audit_db: Path, monkeypatch: pytest.MonkeyPatch
+    @pytest.mark.parametrize("listed", [[], ["0" * 40]], ids=["unlisted", "stale"])
+    async def test_a_want_refs_tip_is_what_the_forge_answered(
+        self, judged: Any, audit_db: Path, monkeypatch: pytest.MonkeyPatch, listed: list[str]
     ) -> None:
+        """A listing that is missing the ref, or names another commit for it,
+        does not decide the tip: the ``wanted-refs`` section does."""
         judged.repo.git("config", "uploadpack.allowRefInWant", "true", cwd=judged.repo.bare)
-        monkeypatch.setattr(git_transport, "resolve_refs", lambda *_args: [])
+        monkeypatch.setattr(git_transport, "resolve_refs", lambda *_args: listed)
+        judges: list[git_judge.GitJudge] = []
+        real = git_fetch.GitJudge
+
+        def spy(**kwargs: Any) -> git_judge.GitJudge:
+            judges.append(judge := real(**kwargs))
+            return judge
+
+        monkeypatch.setattr(git_fetch, "GitJudge", spy)
         headers = {"Content-Type": UPLOAD_REQUEST, "Git-Protocol": "version=2"}
         head = pkt(b"command=fetch\n") + pkt(b"agent=git/2.55.0\n") + b"0001"
         body = head + pkt(b"want-ref refs/heads/main\n") + pkt(b"done\n") + FLUSH
@@ -1308,12 +1341,29 @@ class TestWantRef:
         )
         assert response.status_code == 200
         assert b"packfile" in response.content
-        gap = b"Trentina: unjudged tip files (1 want-refs not in the last listing)"
-        assert gap in response.content
+        assert b"unanswered" not in response.content
+        (judge,) = judges
+        assert judged.repo.rev("refs/heads/main") in judge._wants
         await _background_done()
-        await _settled(audit_db)
-        rows = _db(audit_db, "SELECT * FROM gateway_calls")
-        (row,) = [r for r in rows if r["normalized"]]
-        assert json.loads(row["normalized"])["git_unlisted"] == "1"
-        assert row["error_message"] == "git_unjudged"
         assert await _slots_free()
+
+    @pytest.mark.parametrize(("answered", "gap"), [([], 1), (["a" * 40], 0)])
+    def test_a_want_ref_the_forge_did_not_answer_is_counted(
+        self, answered: list[str], gap: int
+    ) -> None:
+        relay = _relay()
+        relay.fetch.want_refs = 1
+        relay.parser.wanted = answered
+        wants, object_format = relay._wanted()
+        assert (wants, object_format, relay.unlisted) == (answered, "sha1", gap)
+
+    async def test_a_want_ref_the_forge_did_not_answer_is_named_and_recorded(self) -> None:
+        answer = _relay(unlisted=1)
+        answer.busy = True
+        sent = await _released(answer)
+        assert b"Trentina: unjudged tip files (1 want-refs unanswered)" in sent
+        op = relay.Operation(answer.fetch.profile, backend="git:forge")
+        answer.ctx = cast("InTree", SimpleNamespace(op=op))
+        answer.settle()
+        assert op.normalized is not None and op.normalized["git_unlisted"] == "1"
+        assert op.reason == "git_unjudged"

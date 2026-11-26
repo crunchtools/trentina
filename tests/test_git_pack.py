@@ -745,7 +745,10 @@ def test_an_object_is_not_held_twice_while_it_inflates() -> None:
     try:
         tracemalloc.reset_peak()
         base = tracemalloc.get_traced_memory()[0]
-        objects = run_reader(pack, maxpiece=64)
+        # One piece: the whole stream is there for one ``decompress`` call to
+        # inflate at once, unless each call is held to ``_INFLATE_STEP``.
+        reader = PackReader()
+        objects = reader.feed(pack) + reader.finish()
         peak = tracemalloc.get_traced_memory()[1] - base
     finally:
         tracemalloc.stop()

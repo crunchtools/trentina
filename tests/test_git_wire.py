@@ -551,6 +551,33 @@ class TestStripFetchRequest:
         )
         assert wants(out, None) == [ONE.decode(), TWO.decode()]
 
+    @pytest.mark.parametrize("space", [b"\t", b"\r", b" \t ", b"\t\r"])
+    def test_v0_capabilities_behind_any_of_gits_whitespace_are_stripped(self, space: bytes) -> None:
+        # upload-pack splits features on isspace: `want OID x<TAB>thin-pack`
+        # gets a thin pack.
+        body = (
+            pkt(b"want " + ONE + b" side-band-64k" + space + b"thin-pack\n")
+            + pkt(b"want " + TWO + space + b"sideband-all" + space + b"ofs-delta\n")
+            + b"0000"
+        )
+        out = strip_fetch_request(body, None)
+        assert out == (
+            pkt(b"want " + ONE + b" side-band-64k\n")
+            + pkt(b"want " + TWO + b" ofs-delta\n")
+            + b"0000"
+        )
+
+    @pytest.mark.parametrize("space", [b"\t", b"\r", b" \t"])
+    def test_v0_capabilities_behind_any_of_gits_whitespace_are_read(self, space: bytes) -> None:
+        sideband = pkt(b"want " + ONE + b" x" + space + b"side-band-64k\n") + b"0000"
+        assert negotiated_sideband(sideband, None)
+        filtered = pkt(b"want " + ONE + space + b"filter\n") + b"0000"
+        assert is_promisor_fetch(filtered, None)
+
+    def test_a_want_run_into_its_features_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="object id"):
+            strip_fetch_request(pkt(b"want " + ONE + b"thin-pack\n") + b"0000", None)
+
     def test_v0_capabilities_on_a_later_want_are_read(self) -> None:
         body = pkt(b"want " + ONE + EOL) + pkt(b"want " + TWO + b" side-band-64k\n") + b"0000"
         assert negotiated_sideband(body, None)

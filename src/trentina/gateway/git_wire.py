@@ -61,6 +61,8 @@ _PKT_HEADER = 4
 _HEX = frozenset(b"0123456789abcdefABCDEF")
 _NAME_RE = re.compile(r"[A-Za-z0-9_.-]{1,100}")
 _OID_RE = re.compile(rb"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+_GIT_SPACE = re.compile(rb"[ \t\n\r]")
+"""git's ``isspace``: what separates the features on a ``want`` line."""
 _GIT_SUFFIX = ".git"
 _BRANCHES = "refs/heads/"
 _TAGS = "refs/tags/"
@@ -542,16 +544,35 @@ def strip_fetch_request(body: bytes, protocol: str | None) -> bytes:
             verb = line.partition(b" ")[0]
             if verb in _REQUEST_STRIPPED:
                 continue
-        elif line.startswith(b"want "):
-            fields = line.split(b" ")
-            kept = [f for f in fields if f not in _V0_DROPPED_CAPABILITIES]
+        elif (want := _want_line(line)) is not None:
+            oid, features = want
+            kept = [f for f in features if f not in _V0_DROPPED_CAPABILITIES]
             kept = [f for f in kept if f.partition(b"=")[0] != b"packfile-uris"]
-            if len(kept) != len(fields):
+            if len(kept) != len(features):
                 newline = b"\n" if packet.endswith(b"\n") else b""
-                out += _pkt(b" ".join(kept) + newline)
+                out += _pkt(b" ".join([b"want", oid, *kept]) + newline)
                 continue
         out += _pkt(packet)
     return bytes(out)
+
+
+def _want_line(line: bytes) -> tuple[bytes, list[bytes]] | None:
+    """A ``want`` line's object id and the features after it, or None for
+    another line.
+
+    Read as upload-pack reads them: the id runs to the first of git's
+    whitespace (``_GIT_SPACE``), and so does each feature, so a tab hides
+    none of them.
+
+    Raises:
+        ValueError: the id is not one, or is run into what follows it.
+    """
+    if not line.startswith(b"want "):
+        return None
+    oid, *features = _GIT_SPACE.split(line[5:])
+    if not _OID_RE.fullmatch(oid):
+        raise ValueError("a want that is not an object id")
+    return oid, [f for f in features if f]
 
 
 def _want_fields(body: bytes, protocol: str | None) -> tuple[list[bytes], list[bytes]]:
@@ -563,14 +584,12 @@ def _want_fields(body: bytes, protocol: str | None) -> tuple[list[bytes], list[b
     for packet in pkt_lines(body):
         if isinstance(packet, int):
             continue
-        fields = _text(packet).split(b" ")
-        if fields[0] != b"want" or len(fields) < 2:
+        if (want := _want_line(_text(packet))) is None:
             continue
-        if not _OID_RE.fullmatch(fields[1]):
-            raise ValueError("a want that is not an object id")
+        oid, features = want
         if protocol != PROTOCOL_V2:
-            capabilities += fields[2:]
-        wants.append(fields[1])
+            capabilities += features
+        wants.append(oid)
     return wants, capabilities
 
 
@@ -870,6 +889,9 @@ class FetchResponse:
         self._shallow_flushed = False
         self._ended = False
         self.dropped = 0
+        #: The object ids a v2 ``wanted-refs`` section gave the request's
+        #: ``want-ref`` names: the forge's answer, not the listing's.
+        self.wanted: list[str] = []
 
     def feed(self, arrived: bytes) -> list[Event]:
         """The events for the whole pkt-lines ``arrived`` completes.
@@ -937,7 +959,10 @@ class FetchResponse:
             else:
                 events.append(("pass", wire))
         else:
-            _check_section_line(self._section, _text(payload))
+            line = _text(payload)
+            _check_section_line(self._section, line)
+            if self._section == b"wanted-refs":
+                self.wanted.append(line.partition(b" ")[0].decode())
             events.append(("pass", wire))
 
     def _v0_line(self, wire: bytes, payload: bytes | int, events: list[Event]) -> None:
