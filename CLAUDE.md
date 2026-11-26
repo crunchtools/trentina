@@ -517,8 +517,8 @@ acts on its own slice; `role: operator` holds the gateway. Refusals name
 nothing, so a backend in another profile is refused exactly like one that does
 not exist. Standalone (no gateway registered) is single-tenant and therefore
 operator; a live gateway with no bound caller is refused. The four below
-narrow for an agent; `config_tool`, `federation_keygen`, `tool_pins` and
-`audit_verify` refuse one outright (`scope.require_operator`).
+narrow for an agent; `config_tool`, `federation_keygen`, `tool_pins`,
+`audit_verify` and `session_marks_clear` refuse one outright (`scope.require_operator`).
 
 - cache_flush — flush tool-list caches. Agent: its own aggregate ONLY, with a
   constant body; a credential-free backend's row is still shared by every
@@ -529,6 +529,10 @@ narrow for an agent; `config_tool`, `federation_keygen`, `tool_pins` and
   Operator: every cache, every partition of each URL. A name is resolved by EXACT name, never by substring
   over cached URLs — that is how `gw` used to reach `gw-work` and
   `gw-personal` both.
+- session_marks_clear — clear a false positive's session marks and cool-down
+  (#900) without a restart (a1724). `profile` (its window and its sessions'
+  marks), `session` (8+ hex chars of the fingerprint; its marks and the window
+  it owns) or `all`. Operator only; every clear logs who and what.
 - reconnect_backend — reset one backend's circuit breaker + re-probe after it
   restarts, without restarting the gateway. Agent: a backend in its own
   profile, with the tool count that profile would actually see, refreshing

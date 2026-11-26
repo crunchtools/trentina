@@ -214,6 +214,7 @@ through the gateway's own admin tools — `cache_flush`, `reconnect_backend`,
 |---|---|---|
 | `quarantine_stats` | its own audit rows, detections and destinations, and the defense settings it runs under | the whole gateway, every profile's destinations and fan-out, plus compression savings |
 | `cache_flush` | its own aggregate only; the same answer every time | every cache |
+| `session_marks_clear` | refused, so an agent cannot clear its own labels | a profile's cool-down and its sessions' marks, one session's, or `all` |
 | `reconnect_backend` | a backend in its own profile, with the tool count it would see | the name wherever it is configured, and who shares it |
 | `reload_profiles` | validates the whole file, applies its own section | applies the whole file and the gateway-wide settings |
 | `backend_auth` | its own OAuth backends; `start` and `revoke` need `auth.self_authorize` | its own OAuth backends, `self_authorize` or not |
