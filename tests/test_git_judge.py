@@ -735,6 +735,20 @@ async def test_a_piece_that_names_its_sibling_is_still_flagged_on_its_own_read(
     assert len(flagged) == 2, "the sibling it named is flagged too: a false positive, not a pass"
 
 
+@pytest.mark.parametrize(("solo_max", "calls", "flagged"), [(3, 4, 1), (2, 1, 4)])
+async def test_a_group_leaving_more_than_the_solo_cap_unnamed_is_debited_whole(
+    layers: Layers, monkeypatch: pytest.MonkeyPatch, solo_max: int, calls: int, flagged: int
+) -> None:
+    monkeypatch.setattr(git_judge, "L3_SOLO_MAX", solo_max)
+    layers.names = "honest"
+    bad = _blob(f"{L3_MARK}\n")
+    good = [_blob(f"ordinary file number {n}\n") for n in range(3)]
+    judge = await _judged(bad, *good)
+    assert len(layers.asked) == calls, "three unnamed units: alone at the cap, whole past it"
+    assert len(_flagged(judge)) == flagged
+    assert bad.oid in _flagged(judge)
+
+
 @pytest.mark.parametrize("names", [[], [0], [5], [1, 9], ["1"], [True]])
 async def test_an_answer_naming_no_real_piece_flags_the_whole_group(
     layers: Layers, names: list[Any]

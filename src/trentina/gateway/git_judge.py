@@ -19,7 +19,8 @@ is new to the profile's judge rather than by the size of a history:
   neighbours; the others go to L3 in groups of
   at most ``GROUP_TOKENS``, and a clean group is credited to each unit in it.
   A flagged group is debited to the pieces L3 names, and each other unit is
-  judged again alone; an answer naming none is debited to every unit (#932).
+  judged again alone, at most ``L3_SOLO_MAX`` of them; an answer naming none,
+  or leaving more, is debited to every unit (#932).
 - **Files at the tip, whole.** A text blob at the tip of a wanted commit (or a
   blob wanted by id, as a partial clone's lazy fetch asks for it) of at most
   ``Config.whole_tokens`` is also judged whole at L3: the file an agent opens.
@@ -81,6 +82,13 @@ logger = logging.getLogger(__name__)
 
 GROUP_TOKENS = 4096
 """The most tokens one L3 call reads of grouped units (spec 027)."""
+
+L3_SOLO_MAX = 8
+"""The most units a flagged group sends back to L3 alone (#932).
+
+A group of names can hold thousands of units, so placing its finding piece
+by piece is bounded: past this many unnamed units the whole group is
+debited, as when L3 names no piece, and nothing more is spent on it."""
 
 MAX_BINARY_BYTES = 16 * 1024 * 1024
 """Largest binary blob handed to the unpack stage. Past it, ``binary_unread``:
@@ -718,7 +726,8 @@ class GitJudge:
         debited to the pieces L3 names, and each piece it does not name is
         judged again alone, never cleared by the group's answer: a piece can
         name its neighbour, but not its own read (#932). An answer that names
-        no piece, or one that does not exist, is debited to every unit.
+        no piece, or one that does not exist, or that would leave more than
+        ``L3_SOLO_MAX`` units to judge alone, is debited to every unit.
         """
         self.stats["l3_whole" if whole else "l3_groups" if len(units) > 1 else "l3_alone"] += 1
         answer = await self._ask(units, whole=whole)
@@ -735,6 +744,8 @@ class GitJudge:
         risk = answer.get("risk_level")
         risk = risk if risk in RISK_LEVELS else "high"
         named = flagged_pieces(answer, len(units)) if len(units) > 1 else None
+        if named is not None and len(units) - len(named) > L3_SOLO_MAX:
+            named = None
         for n, unit in enumerate(units, 1):
             if named is None or n in named:
                 self._settle(unit, _flag("L3", risk, unit.screened, answer))
