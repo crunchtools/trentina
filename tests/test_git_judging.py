@@ -10,7 +10,9 @@ side band and the audit rows, is the code that runs in production.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
+import os
 import sqlite3
 import subprocess
 from dataclasses import dataclass, field
@@ -21,7 +23,7 @@ import httpx
 import pytest
 
 from trentina.defense import Screened
-from trentina.gateway import git_fetch, git_judge
+from trentina.gateway import git_fetch, git_judge, git_transport
 from trentina.gateway.profile import AuthConfig, Profile
 from trentina.l1.pipeline import PipelineResult, PipelineStats
 from trentina.quarantine.classifier import ClassifierResult
@@ -593,12 +595,25 @@ def _spy_take(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
     taken: list[bool] = []
     real = git_fetch._slots.take
 
-    def spy(profile: str, *, cold: bool = False) -> bool:
+    def spy(profile: str, *, cold: bool = False) -> git_fetch._Slot | None:
         taken.append(cold)
         return real(profile, cold=cold)
 
     monkeypatch.setattr(git_fetch._slots, "take", spy)
     return taken
+
+
+def _spy_promote(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """What each promotion of a running slot to cold answered, from here on."""
+    promoted: list[bool] = []
+    real = git_fetch._slots.promote
+
+    def spy(slot: git_fetch._Slot) -> bool:
+        promoted.append(answer := real(slot))
+        return answer
+
+    monkeypatch.setattr(git_fetch._slots, "promote", spy)
+    return promoted
 
 
 async def _slots_free(timeout: float = 10.0) -> bool:
@@ -679,19 +694,21 @@ class TestJudgingSlots:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(git_fetch, "SLOT_GRACE", 0.05)
-        assert git_fetch._slots.take("agent")
+        slot = git_fetch._slots.take("agent")
+        assert slot
         feeder = cast("git_fetch._Feeder", SimpleNamespace(over=asyncio.Event()))
         judge = asyncio.ensure_future(asyncio.sleep(0))
-        await git_fetch._hold("agent", judge, feeder, 0.0)
+        await git_fetch._hold(slot, judge, feeder, 0.0)
         assert git_fetch._slots.total == 0
 
     async def test_a_slot_waits_for_both_the_reader_and_the_judge(self) -> None:
-        assert git_fetch._slots.take("agent")
+        slot = git_fetch._slots.take("agent")
+        assert slot
         over = asyncio.Event()
         feeder = cast("git_fetch._Feeder", SimpleNamespace(over=over))
         gate = asyncio.Event()
         judge = asyncio.ensure_future(asyncio.wait_for(gate.wait(), 30))
-        hold = asyncio.ensure_future(git_fetch._hold("agent", judge, feeder, 30.0))
+        hold = asyncio.ensure_future(git_fetch._hold(slot, judge, feeder, 30.0))
         over.set()
         await asyncio.sleep(0.05)
         assert git_fetch._slots.total == 1, "the judge is still running"
@@ -729,16 +746,18 @@ class TestJudgingSlots:
         monkeypatch.setenv("TRENTINA_GIT_JUDGES", "4")
         monkeypatch.setenv("TRENTINA_GIT_PROFILE_JUDGES", "2")
         slots = git_fetch._slots
-        assert slots.take("a", cold=True)
-        assert slots.take("b", cold=True)
+        a, b = slots.take("a", cold=True), slots.take("b", cold=True)
+        assert a and b
         assert not slots.take("c", cold=True), "two cold clones hold all they may"
-        assert slots.take("c") and slots.take("d"), "a fetch with haves still finds one"
+        c, d = slots.take("c"), slots.take("d")
+        assert c and d, "a fetch with haves still finds one"
         assert not slots.take("e"), "the gateway's cap"
-        slots.release("a", cold=True)
+        slots.release(a)
         assert slots.cold == 1
-        assert slots.take("e", cold=True)
-        for profile, cold in (("b", True), ("c", False), ("d", False), ("e", True)):
-            slots.release(profile, cold=cold)
+        e = slots.take("e", cold=True)
+        assert e
+        for slot in (b, c, d, e):
+            slots.release(slot)
         assert slots.total == slots.cold == 0
 
     def test_a_single_slot_still_judges_a_clone(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -839,18 +858,103 @@ class TestJudgingSlots:
         assert taken == [False, True], "three objects, then eight"
         assert await _slots_free()
 
+    def test_a_promoted_slot_gives_back_exactly_what_it_holds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_GIT_JUDGES", "4")
+        monkeypatch.setenv("TRENTINA_GIT_PROFILE_JUDGES", "4")
+        slots = git_fetch._slots
+        warm, clone = slots.take("a"), slots.take("b", cold=True)
+        assert warm and clone
+        assert slots.promote(warm) and warm.cold
+        assert slots.cold == 2
+        assert slots.promote(warm), "promoting a cold slot again counts nothing twice"
+        assert slots.cold == 2
+        late = slots.take("c")
+        assert late
+        assert not slots.promote(late), "the cold slots are all taken"
+        assert not late.cold and slots.cold == 2
+        slots.release(warm)
+        slots.release(warm)
+        assert slots.cold == 1 and slots.total == 2, "a second release gives back nothing"
+        assert not slots.promote(warm), "a released slot is not counted again"
+        for slot in (clone, late):
+            slots.release(slot)
+        assert slots.total == slots.cold == 0
+        assert not slots.by_profile
+
+    async def _fetch_big_blobs(self, judged: Any, monkeypatch: pytest.MonkeyPatch) -> str:
+        """Clone, then fetch two large blobs over a valid ``have``: two blobs,
+        a tree and a commit, far under the object count, well over the bytes."""
+        monkeypatch.setattr(git_fetch, "COLD_PACK_BYTES", 64 * 1024)
+        repo = judged.repo
+        code, output = await repo.clone(judged, "2")
+        assert code == 0, output
+        repo.plant(
+            {f"big{n}.txt": base64.b64encode(os.urandom(96 * 1024)) + b"\n" for n in range(2)}
+        )
+        code, output = await harness.git(
+            repo.home, judged.port, "fetch", "origin", cwd=repo.work
+        )  # fmt: skip
+        assert code == 0, output
+        code, merged = await harness.git(
+            repo.home, judged.port, "merge", "--ff-only", "origin/main", cwd=repo.work
+        )  # fmt: skip
+        assert code == 0, merged
+        return output
+
+    async def test_a_few_large_blobs_are_counted_cold_once_past_the_bytes(
+        self, judged: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        promoted = _spy_promote(monkeypatch)
+        taken = _spy_take(monkeypatch)
+        output = await self._fetch_big_blobs(judged, monkeypatch)
+        assert taken[-1] is False, "the request and the header both say warm"
+        assert promoted == [True], "promoted once, as the bytes passed the limit"
+        assert not any("unjudged pack" in line for line in _remote(output)), output
+        assert await _slots_free()
+        assert git_fetch._slots.cold == 0, "given back cold, as it was held"
+
+    async def test_large_blobs_past_the_bytes_with_the_cold_slots_taken_are_busy(
+        self, judged: Any, audit_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("TRENTINA_GIT_JUDGES", "2")
+        clone = git_fetch._slots.take("someone-else", cold=True)
+        assert clone, "the one cold slot of two"
+        promoted = _spy_promote(monkeypatch)
+        try:
+            output = await self._fetch_big_blobs(judged, monkeypatch)
+            assert promoted == [False], "judging started warm and could not go cold"
+            assert "Trentina: unjudged pack (busy)" in _remote(output), output
+            work = judged.repo.work
+            assert len((work / "big0.txt").read_bytes()) > 96 * 1024, "delivered whole"
+            rows = _db(audit_db, "SELECT * FROM gateway_calls ORDER BY id")
+            assert rows[-1]["error_message"] == "git_unjudged", "never served clean"
+            for _ in range(500):
+                if git_fetch._slots.total == 1:
+                    break
+                await asyncio.sleep(0.02)
+            assert git_fetch._slots.total == 1, "the abandoned judging gave its slot back"
+            assert git_fetch._slots.cold == 1, "and did not take the cold one"
+        finally:
+            git_fetch._slots.release(clone)
+        assert await _slots_free()
+
     def test_another_profile_still_gets_a_slot_when_one_is_at_its_cap(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("TRENTINA_GIT_JUDGES", "3")
         monkeypatch.setenv("TRENTINA_GIT_PROFILE_JUDGES", "2")
         slots = git_fetch._slots
-        assert slots.take("a") and slots.take("a")
+        taken = [slots.take("a"), slots.take("a")]
+        assert all(taken)
         assert not slots.take("a"), "a is at its own cap with the gateway's to spare"
-        assert slots.take("b")
+        taken.append(slots.take("b"))
+        assert taken[-1]
         assert not slots.take("c"), "the gateway's cap is reached"
-        for name in ("a", "a", "b"):
-            slots.release(name)
+        for slot in taken:
+            assert slot
+            slots.release(slot)
         assert slots.total == 0
         assert not slots.by_profile
 
@@ -899,3 +1003,57 @@ class TestJudgeBounds:
         assert not judge.full()
         judge.submit_unread("1" * 40, "blob", "too_large")
         assert judge.full()
+
+
+# --- want-ref -----------------------------------------------------------------
+
+
+class TestWantRef:
+    """A v2 fetch that names refs, not objects, still takes a lane and a cold slot."""
+
+    @pytest.mark.parametrize("filtered", [False, True])
+    async def test_a_want_ref_fetch_takes_the_lane_and_a_cold_slot_and_resolves(
+        self, judged: Any, monkeypatch: pytest.MonkeyPatch, filtered: bool
+    ) -> None:
+        for name in ("allowRefInWant", "allowFilter"):
+            judged.repo.git("config", f"uploadpack.{name}", "true", cwd=judged.repo.bare)
+        head = judged.repo.rev("HEAD")
+        lanes: list[tuple[str, bool]] = []
+        real_lane = git_transport.enter_lane
+
+        async def lane(profile: str, promisor: bool) -> Any:
+            lanes.append((profile, promisor))
+            return await real_lane(profile, promisor)
+
+        fetches: list[list[str]] = []
+        real_fetch = git_transport.Fetch
+
+        def fetch(*args: Any, **kwargs: Any) -> Any:
+            fetches.append(list(kwargs["wants"]))
+            return real_fetch(*args, **kwargs)
+
+        monkeypatch.setattr(git_transport, "enter_lane", lane)
+        monkeypatch.setattr(git_transport, "Fetch", fetch)
+        taken = _spy_take(monkeypatch)
+        headers = {"Content-Type": UPLOAD_REQUEST, "Git-Protocol": "version=2"}
+        url = f"{judged.url}/acme/widgets/git-upload-pack"
+
+        def request(command: bytes, *arguments: bytes) -> bytes:
+            head_part = pkt(b"command=" + command + b"\n") + pkt(b"agent=git/2.55.0\n") + b"0001"
+            return head_part + b"".join(pkt(a + b"\n") for a in arguments) + FLUSH
+
+        listing = await judged.client.post(
+            url, content=request(b"ls-refs", b"ref-prefix refs/heads/"), headers=headers
+        )
+        assert listing.status_code == 200
+        assert head.encode() in listing.content
+        assert not lanes, "a listing takes no lane"
+        filters = [b"filter blob:none"] if filtered else []
+        body = request(b"fetch", *filters, b"want-ref refs/heads/main", b"done")
+        response = await judged.client.post(url, content=body, headers=headers)
+        assert response.status_code == 200
+        assert b"packfile" in response.content
+        assert [promisor for _profile, promisor in lanes] == [False], "one lane, not lazy"
+        assert taken == [True], "a want-ref fetch is cold"
+        assert fetches and fetches[-1] == [head], "the name resolved to the listed tip"
+        assert await _slots_free()

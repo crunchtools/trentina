@@ -583,6 +583,34 @@ def wants(body: bytes, protocol: str | None) -> list[str]:
     return [oid.decode() for oid in _want_fields(body, protocol)[0]]
 
 
+def want_refs(body: bytes, protocol: str | None) -> list[str]:
+    """The ref names of a v2 request's ``want-ref`` lines, in order.
+
+    v0 and v1 have no such line. The names are the client's claim; the caller
+    resolves them against the listing it showed.
+
+    Raises:
+        ValueError: a ``want-ref`` whose name is empty or not UTF-8.
+    """
+    if protocol != PROTOCOL_V2:
+        return []
+    names: list[str] = []
+    for packet in pkt_lines(body):
+        if isinstance(packet, int):
+            continue
+        verb, _, name = _text(packet).partition(b" ")
+        if verb != b"want-ref":
+            continue
+        try:
+            decoded = name.decode()
+        except UnicodeDecodeError:
+            raise ValueError("a want-ref that is not UTF-8") from None
+        if not decoded:
+            raise ValueError("a want-ref with no name")
+        names.append(decoded)
+    return names
+
+
 def is_promisor_fetch(body: bytes, protocol: str | None) -> bool:
     """True for a partial clone's lazy fetch: a ``filter`` with explicit
     ``want`` lines and no ``have`` lines.
@@ -592,7 +620,11 @@ def is_promisor_fetch(body: bytes, protocol: str | None) -> bool:
     it could not also send ``have`` for, and a clone has no ``have`` either
     but is told apart by ``filter`` being absent from it when it is full. The
     cheap, conservative rule: filter, at least one want, no have, no deepen.
+    A ``want-ref`` is never lazy: a lazy fetch names objects, so a filtered
+    fetch by ref name is a filtered clone of tips.
     """
+    if want_refs(body, protocol):
+        return False
     wanted, capabilities = _want_fields(body, protocol)
     filtered = protocol != PROTOCOL_V2 and b"filter" in capabilities
     for packet in pkt_lines(body):
@@ -626,8 +658,26 @@ def listed_tips(listing: bytes) -> list[str]:
     return tips
 
 
+def listed_refs(listing: bytes) -> dict[str, str]:
+    """Each ref name a listing shows, with its object id.
+
+    Read like ``listed_tips``, from the rewritten listing; peeled values are
+    left out and a v0 ``capabilities^{}`` line names no ref.
+    """
+    refs: dict[str, str] = {}
+    for packet in pkt_lines(listing):
+        if isinstance(packet, int) or not _is_ref_line(packet):
+            continue
+        fields = _text(packet).partition(b"\0")[0].split(b" ")
+        if fields[1] != b"capabilities^{}":
+            refs[fields[1].decode()] = fields[0].decode()
+    return refs
+
+
 def is_cold_fetch(body: bytes, protocol: str | None) -> bool:
     """True for a fetch with nothing to negotiate from: wants and no ``have``.
+
+    A ``want-ref`` counts as a want.
 
     A clone, shallow or not, and a fetch into an empty repository. A partial
     clone's lazy fetch has no ``have`` either; the caller tells it apart with
@@ -641,7 +691,7 @@ def is_cold_fetch(body: bytes, protocol: str | None) -> bool:
     for packet in pkt_lines(body):
         if not isinstance(packet, int) and _text(packet).partition(b" ")[0] == b"have":
             return False
-    return bool(wanted)
+    return bool(wanted or want_refs(body, protocol))
 
 
 def negotiated_sideband(body: bytes, protocol: str | None) -> bool:

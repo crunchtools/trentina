@@ -252,7 +252,12 @@ finish judging still find one. A fetch counts as a clone when its request has
 no `have`, when it is filtered and wants a ref tip the repository's last
 listing showed (a partial clone's lazy blob fetch wants no tip), or when the
 forge's pack declares more than 1,000 objects, whatever `have` lines the
-request carried.
+request carried. A `want-ref` counts as a want, resolved to its object id
+from that listing where it can be. A fetch that started warm becomes a clone
+once its pack has carried more than 1.5 MiB (`COLD_PACK_BYTES`), so a few
+large blobs (`git backfill`, `fetch --deepen`) are bounded like many small
+ones; if the clones' half is already taken then, the reading stops, its slot
+is given back, and the rest of the pack is delivered unjudged, named `busy`.
 
 **Clones made before phase 1 hold history no layer read.** A fetch brings
 only what is new, and judging does not reach back into a checkout: re-clone
