@@ -34,6 +34,7 @@ from .tools import (
     read_file,
     reconnect_backend,
     reload_profiles,
+    session_marks_clear,
     web_search,
 )
 
@@ -362,6 +363,29 @@ async def audit_verify_tool() -> dict[str, Any]:
     whole chain.
     """
     return await audit_verify()
+
+
+@mcp.tool()
+async def session_marks_clear_tool(
+    profile: str | None = None,
+    session: str | None = None,
+    all: bool = False,
+) -> dict[str, Any]:
+    """Clear session marks and cool-down windows after a false positive.
+
+    Operator only. A label a profile's guards refuse on cools the whole
+    profile down: its other sessions read unknown and are refused until the
+    window passes. This takes that back without a restart, and logs who
+    cleared what.
+
+    Args:
+        profile: Clear this profile's window and the marks of its sessions.
+        session: Clear one session's marks, and the window if it owns it: its
+            fingerprint, or the first 8+ characters the log prints.
+        all: Clear every mark and window. Needed to clear with neither of the
+            others; refused with them.
+    """
+    return await session_marks_clear(profile, session, all)
 
 
 @mcp.tool()
