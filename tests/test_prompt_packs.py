@@ -424,6 +424,7 @@ class TestTheHarness:
         measured = harness.measure(report, [*report.results, failed])
         assert measured["schema_conformance"] == pytest.approx(20 / 21)
         assert measured["calls"] == 21
+        assert measured["truncated"] == 1, "cut-off answers are counted apart (#908)"
         baseline = tmp_path / "generic.json"
         self._run(tmp_path, monkeypatch, report, "--prompt-pack", "generic", "--out", str(baseline))
         recorded = json.loads(baseline.read_text())
