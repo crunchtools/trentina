@@ -21,6 +21,18 @@ A dropped entry must not read as a clean session, or a flood of marked
 sessions would launder an older one. So until every dropped entry would have
 expired anyway, a session with no entry is unknown (None) rather than clean:
 the judge is told so, and ``refuse_when`` refuses it (#457).
+
+Nor may a session launder a marked one by moving to another session of the
+same profile (#900): one opened beforehand, a fresh ``initialize``, or an id
+this process never issued and adopts (``sessions.adopt``). So a mark the
+profile's guards refuse on opens a window on its PROFILE: for
+``session_mark_cooldown_seconds`` every other session of that profile, live
+or new, reads unknown (None) and ``refuse_when`` refuses it. The session that
+opened it owns it and keeps reading its own labels; a later refusing mark only
+extends it, so no other session can take it by earning a label of its own. The
+profile is the one the request bound (:func:`bind`, ``current_session_profile``),
+never a per-session table a teardown or a flood could empty first, so the
+state is one entry per profile and a flood of sessions costs nothing.
 """
 
 from __future__ import annotations
@@ -37,7 +49,7 @@ from typing import TYPE_CHECKING, Any
 from ..credential_shapes import kinds as credential_kinds
 from ..outcomes import Outcome
 from ..reserved import WARNING_KEY
-from .context import current_call, current_session
+from .context import current_call, current_session, current_session_profile
 
 if TYPE_CHECKING:
     from ..core.stages import Assembled
@@ -45,6 +57,8 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 MARK_TTL_SECONDS = 12 * 3600
+COOLDOWN_DEFAULT = 1800.0
+"""Seconds a profile's other sessions read unknown after a mark (#900)."""
 MAX_MARKS = 10_000
 
 
@@ -75,13 +89,20 @@ class _Entry:
 _marks: OrderedDict[str, _Entry] = OrderedDict()
 _unknown_until = 0.0
 """Monotonic time before which a session with no entry may be one we dropped."""
+_policies: dict[str, tuple[float, frozenset[SessionLabel]]] = {}
+"""Profile to its cool-down and the labels its guards refuse on, as last bound.
+A profile never bound is held to the default cool-down on every label."""
+_windows: dict[str, tuple[float, str]] = {}
+"""Profile to (cool-down end, the session whose mark opened it). The owner is
+pinned for the life of the window: a later mark extends it, never takes it."""
 
 
-def mark(session: str, label: SessionLabel) -> bool:
+def mark(session: str, label: SessionLabel, profile: str | None = None) -> bool:
     """Set *label* on *session*.
 
     Returns True when the label was not already live, so the caller can log
-    the call that set it once rather than on every call after.
+    the call that set it once rather than on every call after. *profile*
+    defaults to the one the request bound (``current_session_profile``).
     """
     global _unknown_until
     if not session:
@@ -89,6 +110,15 @@ def mark(session: str, label: SessionLabel) -> bool:
     current = labels(session)
     first = current is None or label not in current
     now = time.monotonic()
+    owner = profile or current_session_profile.get()
+    if owner:
+        _open_window(owner, session, label, now)
+    else:
+        logger.warning(
+            "session marks: no profile bound for session %s… (%s); no cool-down opened",
+            session[:8],
+            label.value,
+        )
     # A session evicted by a flood and labelled again must not read as having
     # only its new label: its dropped ones may have refused it. A window
     # already past reads as known, so it needs no special case.
@@ -106,6 +136,34 @@ def mark(session: str, label: SessionLabel) -> bool:
     return first
 
 
+def _open_window(profile: str, session: str, label: SessionLabel, now: float) -> None:
+    """Open or extend *profile*'s cool-down for a refusing *label* (#900).
+
+    Only a label the profile's guards refuse on opens one: a label that
+    refuses nothing must neither lock every seat nor hand the window to a
+    session that carries it. The first marker owns the window until it
+    closes; another session's refusing mark only moves the end later.
+    """
+    cooldown, refusing = _policies.get(profile, (COOLDOWN_DEFAULT, frozenset(SessionLabel)))
+    if cooldown <= 0 or label not in refusing:
+        return
+    window = _windows.get(profile)
+    if window is not None and now < window[0]:
+        _windows[profile] = (max(window[0], now + cooldown), window[1])
+    else:
+        _windows[profile] = (now + cooldown, session)
+
+
+def bind(profile: str, cooldown_seconds: float, refusing: frozenset[SessionLabel]) -> None:
+    """Bind the request's profile and record its cool-down policy (#900).
+
+    Called at the gateway edge beside ``current_session``, so every mark and
+    every read inside the request knows the profile without a table lookup.
+    """
+    current_session_profile.set(profile)
+    _policies[profile] = (cooldown_seconds, refusing)
+
+
 def labels(session: str) -> frozenset[SessionLabel] | None:
     """The live labels on *session*.
 
@@ -116,6 +174,11 @@ def labels(session: str) -> frozenset[SessionLabel] | None:
     if not session:
         return None
     now = time.monotonic()
+    # Another session of a profile marked within its cool-down (#900): one
+    # opened beforehand or since, minted or adopted, all read unknown.
+    window = _windows.get(current_session_profile.get())
+    if window is not None and now < window[0] and session != window[1]:
+        return None
     entry = _marks.get(session)
     if entry is None:
         return None if now < _unknown_until else frozenset()
@@ -137,6 +200,8 @@ def clear() -> None:
     """Forget every mark. For tests."""
     global _unknown_until
     _marks.clear()
+    _policies.clear()
+    _windows.clear()
     _unknown_until = 0.0
 
 

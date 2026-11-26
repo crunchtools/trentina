@@ -1373,6 +1373,31 @@ class TestResponseGuardIsOperatorOnly:
         assert _registry()["beta"].semantic_response_guards is not None
 
 
+BETA_NO_COOLDOWN_YAML = BASE_YAML.replace(
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n",
+    "  beta:\n    auth:\n      bearer_token_env: TEST_BETA_TOKEN\n"
+    "    session_mark_cooldown_seconds: 0\n",
+)
+
+
+class TestSessionCooldownIsOperatorOnly:
+    """#900: an agent that turned its own cool-down off could shed its labels."""
+
+    async def test_agent_cannot_turn_its_own_off(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_NO_COOLDOWN_YAML, encoding="utf-8")
+        result = await _reload_as("beta")
+
+        assert _registry()["beta"].session_mark_cooldown_seconds == 1800
+        assert "session_mark_cooldown_seconds" in result["not_applied"]["operator_only"]
+
+    async def test_operator_reload_applies_it(self, profiles_path: Path) -> None:
+        profiles_path.write_text(BETA_NO_COOLDOWN_YAML, encoding="utf-8")
+        result = await _reload_as("alpha")
+
+        assert result["reloaded"] is True
+        assert _registry()["beta"].session_mark_cooldown_seconds == 0
+
+
 FED_URL = "https://peer.example/gateway/shared/mcp"
 
 FED_YAML = BASE_YAML.replace(

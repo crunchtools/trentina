@@ -538,7 +538,11 @@ that backend's `tools_allow`, or the file does not load. Add
 outright once the session has been delivered flagged content, tripped a decoy or
 tried to send a credential (#457, #860). `refuse_when: [flagged_delivery,
 tripped, credential_seen]` picks the session labels that refuse; the key above
-is shorthand for the first two (#861). The block is
+is shorthand for the first two (#861). For
+`session_mark_cooldown_seconds` (default 1800, 0 off) after any of the profile's
+sessions is given a label those guards refuse on, every other session of the
+profile, live, new or adopted, reads unknown and those calls are refused, so moving to another
+session sheds nothing (#900). The block is
 perimeter: an agent's own reload cannot change it, and a honeypot cannot
 have one. Scenarios, the policy-writing guide, refusal codes and what it
 cannot do are in [Semantic Request Guards](semantic-request-guards.md).

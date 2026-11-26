@@ -63,9 +63,14 @@ What adoption does **not** carry over:
   `notifications/tools/list_changed`, delivered on the first SSE stream the
   session opens, so the client re-requests the list. A client that only ever
   POSTs never receives it; its next `load_tools` reconciles anyway.
-- **Flag marks.** `session_marks` is in-memory too. After a restart an unmarked
-  session reads clean whether it re-initializes or is adopted, so adoption
-  launders nothing.
+- **Flag marks.** `session_marks` is in-memory too, and a fingerprint it has
+  never seen reads clean, so re-initializing or presenting an id to adopt
+  would shed a session's labels. The profile's cool-down closes that (#900):
+  within `session_mark_cooldown_seconds` of a refusing label on any of its sessions,
+  every other session of the profile, adopted ones included, reads unknown
+  and `refuse_when` refuses it. See
+  [Semantic Request Guards](semantic-request-guards.md). A restart forgets the
+  marks and the cool-down alike.
 - **TTL expiry inside one process.** A seat idle past
   `gateway.session_ttl_seconds` has its session expired and tombstoned, so its
   reconnect is refused rather than adopted and it stays down until its next

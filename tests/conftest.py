@@ -17,6 +17,7 @@ from trentina import config as config_mod
 from trentina import database as database_mod
 from trentina import logsafe
 from trentina import perimeter_db as perimeter_db_mod
+from trentina.gateway import session_marks
 from trentina.gateway import upstream as upstream_mod
 from trentina.gateway.aggregate import reset_profile_tools_cache
 from trentina.gateway.at_rest import reset as reset_at_rest
@@ -128,6 +129,9 @@ def _reset_singletons() -> None:
     reset_profile_tools_cache()
     reset_verdict_cache()
     reset_l3_cache()
+    # A mark in one test must not put a later test's fresh session in its
+    # profile's cool-down (#900).
+    session_marks.clear()
     # The KEK is read once and kept; a test that sets one must not seal the
     # stores of every test after it.
     reset_at_rest()

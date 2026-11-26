@@ -116,6 +116,7 @@ profiles:
         tools_allow: [search_messages, get_message, draft_message, send_message]
         destination_params:
           send_message: to        # so the gatekeeper can tell a first contact
+    session_mark_cooldown_seconds: 1800  # optional; 0 off (#900)
     semantic_request_guards:
       policy: |
         Replies go only to the person who wrote the thread being answered.
@@ -169,7 +170,41 @@ Turn it on for profiles that run unattended: a swarm or coding agent that reads
 mail, tickets or web pages and nobody watches. Leave it off for an assistant
 a person talks to. Those read flagged content routinely, often because the
 person asked them to read about an attack, and would lose their guarded tools
-for the rest of the session. A new session starts clean.
+for the rest of the session.
+
+### Moving to another session does not shed a label
+
+Labels belong to a session, and a session is whatever ID the client presents,
+so an agent could shed its labels by moving: carry on in a session it opened
+beforehand, send `initialize` for a new one, or present any well-formed ID the
+gateway never issued and have it adopted. Each would read clean (#900).
+
+So a profile has a cool-down. For `session_mark_cooldown_seconds` (default
+1800, 30 minutes) after a session of the profile is given a label the
+profile's guards refuse on (its `refuse_when` and `refuse_when_flagged`, request
+and response guards together), **every other session of that profile** reads
+**unknown**, whether it was live already, minted since or adopted: the same
+state as a client that sends no session ID. `refuse_when` and
+`refuse_when_flagged` refuse its guarded calls with `session_flagged`, and the
+judge is told the session is unknown. A label the profile does not refuse on
+opens no window, so one credential-shaped read does not lock every seat.
+
+The session whose label opened the window owns it until it closes, and keeps
+reading its own labels. A later refusing label on any session only moves the
+end of the window later, never earlier, and never hands it to that session: an
+agent cannot give the window to a second session by getting that one a label
+of its own. When the window passes, every session reads its own labels again.
+
+That includes a person's other seat on the same profile: one mark costs every
+session of the profile its guarded calls for the window. Give seats that must
+not share that fate their own profiles. `0` turns the cool-down off; the
+ceiling is 86400. It is perimeter: an agent's own `reload_profiles` cannot
+change it, and a federation ingress carries its source's.
+
+The window is one entry per profile, bound from the request at the gateway
+edge, so a session deleted while its flagged response is in flight still opens
+it, and a flood of sessions stores nothing. Held in memory, like the labels, so
+a gateway restart forgets both.
 
 The first mark on a session is logged once, with the `call_ref` of the call
 whose response carried the flag, so the audit row that tainted it can be
@@ -267,7 +302,7 @@ code and nothing else:
 | `other` | judge | A refusal with no listed reason, or an answer that was not an explicit allow. |
 | `arguments_flagged` | layers | L1, L2 or L3 flagged the arguments. |
 | `arguments_unjudged` | layers | The layers could not finish reading the arguments. |
-| `session_flagged` | gateway | `refuse_when` or `refuse_when_flagged` lists a label this session carries (`flagged_delivery`, `tripped`), or it sent no session ID. |
+| `session_flagged` | gateway | `refuse_when` or `refuse_when_flagged` lists a label this session carries (`flagged_delivery`, `tripped`), or the session is unknown: it sent no session ID, or another session of its profile was given a refusing label within the profile's `session_mark_cooldown_seconds` (#900). On `/proxy/http` there is no session, so the labels are always unknown there. |
 | `session_credential_seen` | gateway | `refuse_when` lists `credential_seen`, and this session was delivered a credential. |
 | `gatekeeper_unavailable` | gateway | No judge is configured, or it failed, timed out, answered off-schema or leaked its canary. |
 
