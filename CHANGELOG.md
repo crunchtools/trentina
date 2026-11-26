@@ -18,6 +18,12 @@ under that name.
   plus about 18 High and Medium CVEs. The gateway never used video I/O; the
   image now ships no FFmpeg at all.
 
+### Fixed
+- The image's OpenCV build stage takes numpy from `uv export --frozen
+  --only-group opencv-build` instead of cutting it out of the main export with
+  a regex, so constitution S1 can see it comes from uv.lock and `sdlc push`
+  passes without `SDLC_SKIP=constitution`.
+
 ## [6.31.0] - 2026-11-24
 
 ### Added

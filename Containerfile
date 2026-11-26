@@ -149,12 +149,13 @@ COPY pyproject.toml uv.lock ./
 # other one and needs no special case here.
 #
 # opencv-python-headless is the exception: it is built in the `opencv` stage
-# below, so it is left out here, and numpy's locked entry is split out for
-# that stage to build against.
+# below, so it is left out here, and numpy's locked entry is exported on its
+# own (the `opencv-build` group) for that stage to build against.
 RUN uv export --frozen --no-dev --extra matrix --extra bridge --no-emit-project \
       --no-emit-package opencv-python-headless \
       --format requirements-txt -o /requirements.txt \
- && python3 -c "import re; open('/numpy.txt', 'w').write(re.search(r'^numpy==.*?[^\\\\]\\n', open('/requirements.txt').read(), re.M | re.S).group())"
+ && uv export --frozen --only-group opencv-build --no-emit-project \
+      --format requirements-txt -o /numpy.txt
 
 # ============================================================
 # OpenCV, built without video I/O. The opencv-python-headless wheel bundles
