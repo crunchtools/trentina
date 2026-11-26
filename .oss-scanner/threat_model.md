@@ -58,15 +58,15 @@ controls. Verified by reading the code at the commit this file was added.
 | Hostile PDF and image parsers never run in the gateway process | `unpack/child.py:ask` |
 | A tool definition change is held, not silently served | `gateway/tool_pins.py:check_tools` |
 | A verdict cache is the layer's own read reused: keyed on content, tenant and versions, completed verdicts only | `gateway/verdict_cache.py`, `quarantine/l3_cache.py`; `tests/test_verdict_cache_rule.py` |
-| The gateway never executes or shells out on untrusted content | Constitution, "What the Gateway Never Does"; the only subprocess is `unpack/child.py` with a constant argv |
+| The gateway never executes or shells out on untrusted content | The only subprocess is `unpack/child.py` with a constant argv |
 
 ## Out of scope
 
-The constitution's Threat Model "Not defended" list governs: a user
-jailbreaking their own model directly; an agent with a second path to the
-content that does not cross the gateway; a compromised host or operator; and
-every entry in the known gaps (`docs/defense-pipeline.md`, "Known gaps",
-including 26 CONNECT bytes, 29 git packs and ref names, 30 the guard judge is
-a model, 33 the federation stamp). Also out of scope: vulnerabilities in the
+Not defended: a user jailbreaking their own model directly (the L3 judge is
+not a chat-safety filter); an agent with a second path to the content that
+does not cross the gateway; a compromised host or operator; and every entry
+in the known gaps (`docs/defense-pipeline.md`, "Known gaps", including 26
+CONNECT bytes, 29 git packs and ref names, 30 the guard judge is a model, 33
+the federation stamp). Also out of scope: vulnerabilities in the
 FastMCP OAuth provider that implements DCR, the container runtime and the
 upstream model providers. Report in-scope findings per `SECURITY.md`.

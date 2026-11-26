@@ -147,8 +147,54 @@ COPY pyproject.toml uv.lock ./
 # a VCS requirement under hash checking. It reached PyPI as of 4.1.1 (issue
 # #96), so it is now an ordinary locked, hash-verified dependency like every
 # other one and needs no special case here.
+#
+# opencv-python-headless is the exception: it is built in the `opencv` stage
+# below, so it is left out here, and numpy's locked entry is split out for
+# that stage to build against.
 RUN uv export --frozen --no-dev --extra matrix --extra bridge --no-emit-project \
-      --format requirements-txt -o /requirements.txt
+      --no-emit-package opencv-python-headless \
+      --format requirements-txt -o /requirements.txt \
+ && python3 -c "import re; open('/numpy.txt', 'w').write(re.search(r'^numpy==.*?[^\\\\]\\n', open('/requirements.txt').read(), re.M | re.S).group())"
+
+# ============================================================
+# OpenCV, built without video I/O. The opencv-python-headless wheel bundles
+# FFmpeg, which the gateway never calls (cv2 is only rapidocr's image code,
+# in unpack/ocr_worker.py) and which put FFmpeg's CVEs in this image's scan
+# (9.0.2 in the 5.1.0.95 wheel). Only the modules rapidocr and the worker use
+# are built: core, imgproc and imgcodecs (JPEG and PNG, from OpenCV's own
+# copies), statically, so cv2 needs nothing from the runtime but libstdc++.
+# The source is pinned by hash and should track the lock's
+# opencv-python-headless version, which tests still run against.
+# IPP is off because its configure step downloads a binary.
+# ============================================================
+FROM quay.io/hummingbird/python:3.14-builder@sha256:df20744183ad6dcf65a5ff32409a2120892e3ce92c95bd736cb64ab66117f830 AS opencv
+USER 0
+RUN dnf install -y gcc-c++ python3-devel cmake ninja-build tar gzip && dnf clean all
+RUN pip install --no-cache-dir uv==0.13.7
+COPY --from=lock /numpy.txt /tmp/numpy.txt
+RUN uv pip install --no-cache --system --no-deps --require-hashes -r /tmp/numpy.txt
+ARG OPENCV_VERSION=5.1.0
+ARG OPENCV_SHA256=638c1dae7e37e45afea21aa217dc667ad7cf57acc66cdf652c074f1e0e5ad6d2
+WORKDIR /src
+RUN curl -fsSL -o opencv.tar.gz "https://github.com/opencv/opencv/archive/refs/tags/${OPENCV_VERSION}.tar.gz" \
+ && echo "${OPENCV_SHA256}  opencv.tar.gz" | sha256sum -c - \
+ && tar xzf opencv.tar.gz \
+ && cmake -G Ninja -S "opencv-${OPENCV_VERSION}" -B build \
+      -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/opencv \
+      -DBUILD_LIST=core,imgproc,imgcodecs,python3 -DBUILD_SHARED_LIBS=OFF \
+      -DOPENCV_FORCE_PYTHON_LIBS=ON -DBUILD_opencv_python3=ON \
+      -DBUILD_JPEG=ON -DBUILD_PNG=ON -DBUILD_ZLIB=ON \
+      -DWITH_FFMPEG=OFF -DWITH_GSTREAMER=OFF -DWITH_V4L=OFF -DWITH_1394=OFF \
+      -DWITH_GTK=OFF -DWITH_QT=OFF -DWITH_OPENCL=OFF -DWITH_IPP=OFF \
+      -DWITH_TIFF=OFF -DWITH_WEBP=OFF -DWITH_OPENJPEG=OFF -DWITH_JASPER=OFF \
+      -DWITH_OPENEXR=OFF -DWITH_AVIF=OFF -DWITH_LAPACK=OFF -DWITH_EIGEN=OFF \
+      -DWITH_PROTOBUF=OFF -DWITH_ADE=OFF \
+      -DBUILD_TESTS=OFF -DBUILD_PERF_TESTS=OFF -DBUILD_EXAMPLES=OFF \
+      -DBUILD_opencv_apps=OFF -DBUILD_DOCS=OFF -DBUILD_JAVA=OFF \
+      -DPYTHON3_EXECUTABLE=/usr/bin/python3 -DOPENCV_PYTHON3_INSTALL_PATH=/usr/lib64/python3.14/site-packages \
+ && cmake --build build --parallel 4 \
+ && cmake --install build \
+ && python3 -c "import cv2; print(cv2.__version__)"
 
 FROM quay.io/hummingbird/python:3.14-builder@sha256:df20744183ad6dcf65a5ff32409a2120892e3ce92c95bd736cb64ab66117f830 AS deps
 USER 0
@@ -166,6 +212,7 @@ RUN tr -d - < /proc/sys/kernel/random/uuid > /etc/machine-id.seed
 RUN pip install --no-cache-dir uv==0.13.7
 COPY --from=lock /requirements.txt /tmp/requirements.txt
 RUN uv pip install --no-cache --prefix=/usr --no-deps -r /tmp/requirements.txt
+COPY --from=opencv /usr/lib64/python3.14/site-packages/cv2/ /usr/lib64/python3.14/site-packages/cv2/
 
 # The project itself, in its own stage so a source change costs only this one.
 # --no-deps again: the locked set is already installed above, and letting the

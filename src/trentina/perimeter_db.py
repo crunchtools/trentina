@@ -102,7 +102,7 @@ PIN_APPROVED = "approved"
 PIN_PENDING = "pending"
 PIN_REJECTED = "rejected"
 
-PERIMETER_VERSION = "26"
+PERIMETER_VERSION = "27"
 """Bump whenever a change could alter what a scan CONCLUDES: a new detector, a
 retuned L3 prompt, a different L2 model or threshold set. Rows stamped with any
 other value are swept on load, so an older perimeter's verdict is unusable
@@ -139,6 +139,8 @@ Ecoji and Zalgo (gap 23 and the rest of garak's list).
 "26" (a1061): the verdict key carries this stamp, and an OpenRouter judge is
 named by its dated build, so every key is new; the rows written under the old
 ones could never be read again and are swept instead.
+"27" (a1144): a flagged L3 group is debited to the pieces it names, the rest
+judged alone (#932), so the debits of innocent neighbours are swept.
 
 The L2 model and its threshold are no longer bumped here: they are an
 operator setting since 0.55.0 (#350), so :func:`perimeter_stamp` carries them."""

@@ -139,6 +139,12 @@ class TestWhatAPackMayBe:
         files = sorted(packs.SHIPPED_DIR.glob("*.json"))
         assert len(packs.shipped()) == len(files)
 
+    def test_every_detection_prompt_asks_which_pieces_it_flags(self) -> None:
+        # A judge never asked names no piece, and a flagged group of names is
+        # debited whole (#932).
+        for pack in (*packs.shipped().values(), packs.GENERIC):
+            assert "flagged_pieces" in pack.detection, pack.id
+
 
 class TestWhichPackACallGets:
     def test_an_operators_pack_applies_to_the_judge_it_names_and_no_other(
