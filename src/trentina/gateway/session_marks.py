@@ -33,6 +33,10 @@ extends it, so no other session can take it by earning a label of its own. The
 profile is the one the request bound (:func:`bind`, ``current_session_profile``),
 never a per-session table a teardown or a flood could empty first, so the
 state is one entry per profile and a flood of sessions costs nothing.
+
+Only an operator takes a mark or a window back (:func:`clear_marks`, the
+``session_marks_clear`` tool, a1724): a false positive otherwise held a
+profile until its window passed or the gateway restarted.
 """
 
 from __future__ import annotations
@@ -84,6 +88,9 @@ class _Entry:
     unknown_until: float = 0.0
     """Set when the entry was created while a dropped entry could have been
     this session's: until then the labels here are not its whole history."""
+    profile: str = ""
+    """The profile bound when the entry was made, so an operator can clear a
+    profile's sessions (:func:`clear_marks`). Empty when none was bound."""
 
 
 _marks: OrderedDict[str, _Entry] = OrderedDict()
@@ -122,7 +129,8 @@ def mark(session: str, label: SessionLabel, profile: str | None = None) -> bool:
     # A session evicted by a flood and labelled again must not read as having
     # only its new label: its dropped ones may have refused it. A window
     # already past reads as known, so it needs no special case.
-    _marks.setdefault(session, _Entry(unknown_until=_unknown_until)).labels[label] = now
+    entry = _marks.setdefault(session, _Entry(unknown_until=_unknown_until, profile=owner))
+    entry.labels[label] = now
     _marks.move_to_end(session)
     while len(_marks) > MAX_MARKS:
         _, dropped = _marks.popitem(last=False)
@@ -194,6 +202,68 @@ def was_flagged(session: str) -> bool | None:
     """Whether *session* carries a live ``FLAG_LABELS`` label, None when unknown."""
     live = labels(session)
     return None if live is None else bool(live & FLAG_LABELS)
+
+
+def matching_sessions(prefix: str) -> list[str]:
+    """The sessions holding a mark or a window whose fingerprint starts with *prefix*.
+
+    The log names a session by its first eight characters, so that is what an
+    operator has to hand.
+    """
+    held = set(_marks) | {owner for _, owner in _windows.values()}
+    return sorted(s for s in held if s.startswith(prefix))
+
+
+def clear_marks(
+    *, profile: str | None = None, session: str | None = None, everything: bool = False
+) -> dict[str, Any]:
+    """Forget marks and cool-down windows; the operator's way out of a false positive.
+
+    *profile* drops that profile's window and the marks of every session made
+    under it; *session* drops that session's marks and any window it owns;
+    *everything* empties the table. Both a profile and a session clear the
+    union. A session still reads unknown afterwards while a flood-dropped
+    entry could have been its own (``_unknown_until``), unless *everything*
+    was cleared; the result says how long that lasts.
+
+    Returns:
+        ``windows`` and ``sessions`` removed (live ones only, sessions by
+        their first eight characters), and ``dropped_unknown_seconds`` when
+        a flood still leaves unmarked sessions unknown.
+    """
+    global _unknown_until
+    now = time.monotonic()
+    windows = {
+        p: w
+        for p, w in _windows.items()
+        if everything or p == profile or (session and w[1] == session)
+    }
+    sessions = {
+        s: e
+        for s, e in _marks.items()
+        if everything or s == session or (profile and e.profile == profile)
+    }
+    for p in windows:
+        del _windows[p]
+    for s in sessions:
+        del _marks[s]
+    if everything:
+        _unknown_until = 0.0
+    result: dict[str, Any] = {
+        "windows": [
+            {"profile": p, "remaining_seconds": round(end - now), "owner": owner[:8]}
+            for p, (end, owner) in sorted(windows.items())
+            if now < end
+        ],
+        "sessions": [
+            {"session": s[:8], "profile": e.profile, "labels": sorted(live)}
+            for s, e in sessions.items()
+            if (live := [lb.value for lb, at in e.labels.items() if now - at <= MARK_TTL_SECONDS])
+        ],
+    }
+    if now < _unknown_until:
+        result["dropped_unknown_seconds"] = round(_unknown_until - now)
+    return result
 
 
 def clear() -> None:

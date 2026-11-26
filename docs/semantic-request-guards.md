@@ -206,6 +206,17 @@ edge, so a session deleted while its flagged response is in flight still opens
 it, and a flood of sessions stores nothing. Held in memory, like the labels, so
 a gateway restart forgets both.
 
+A restart is not the only way out of a false positive. An operator calls
+`session_marks_clear_tool` with `profile` to drop that profile's window and the
+marks of every session made under it, with `session` (a fingerprint, or the
+first 8 or more hex characters the gateway log prints) to drop one session's
+marks and the window if it owns it, or with `all` to drop everything; `all`
+cannot be combined with the others, and a call naming none changes nothing.
+It is operator only, so an agent cannot clear its own labels, and every clear
+logs a WARNING naming the caller and what was removed. A refusing label after a
+clear opens a new window as usual. Over federation the tool is reachable only
+when the operator profile's internal backend lists it in `tools_allow`.
+
 The first mark on a session is logged once, with the `call_ref` of the call
 whose response carried the flag, so the audit row that tainted it can be
 found.

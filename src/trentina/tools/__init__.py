@@ -11,6 +11,7 @@ from .dir import block_dir, flag_dir, list_dir, redact_dir
 from .enrol import approval_enrol
 from .fetch import block_fetch, fetch_page, flag_fetch, redact_fetch
 from .keygen import federation_keygen
+from .marks import session_marks_clear
 from .pins import manage_tool_pins
 from .read import block_read, flag_read, read_file, redact_read
 from .reconnect import reconnect_backend
@@ -54,5 +55,6 @@ __all__ = [
     "redact_read",
     "redact_search",
     "reload_profiles",
+    "session_marks_clear",
     "web_search",
 ]
