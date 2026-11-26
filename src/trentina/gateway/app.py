@@ -40,6 +40,7 @@ from .context import (
     current_origin,
     current_select,
     current_session,
+    current_session_profile,
     session_fingerprint,
 )
 from .errors import (
@@ -776,6 +777,7 @@ async def _handle_post(
     # Each request is its own task, so the binding ends with it. The id is a
     # bearer of the session: only its fingerprint reaches the audit.
     current_session.set(session_fingerprint(session_id))
+    current_session_profile.set(profile_name)
     # Unconditionally, from this request's own state (#592, C2): a federated
     # request carries (peer, sub); every other — including a static-bearer call
     # to a federation profile — lands None, never a value left by a reused task.

@@ -21,7 +21,7 @@ from ..reserved import (
     reserved_sites,
     strip_reserved,
 )
-from . import discovery, session_marks, tool_pins
+from . import discovery, tool_pins
 from .backend import (
     _federated_held_secondary,
     list_backend_tools,
@@ -95,7 +95,6 @@ def _on_backend_evicted(url: str) -> None:
 
 on_backend_cache_evict(_on_backend_evicted)
 session_registry.on_remove(discovery.forget_session)
-session_registry.on_remove(session_marks.forget)
 
 
 def _rebuild_after_compression() -> None:

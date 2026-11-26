@@ -1301,5 +1301,12 @@ classification = "by_design"
 check = "copy_paste_detection"
 path = "src/trentina/gateway/session_marks.py"
 pattern = "clear"
-justification = "A test reset of module state, five assignments to this module's own tables; verdict_cache.reset_verdict_cache resets different tables in the same shape"
+justification = "A test reset of module state, four table clears and the unknown-window reset, all this module's own state; verdict_cache.reset_verdict_cache resets different tables in the same shape"
 classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/unpack/alphabets.py"
+item = "decode_base2048"
+justification = "Base2048 decoding shares only a guard-then-loop-then-build statement shape with discovery._index, paging and session_marks.admit (#900, which prunes and caps the cool-down admissions); the discovery side is already excepted for the same reason, and no logic is common"
+classification = "gourmand_bug"

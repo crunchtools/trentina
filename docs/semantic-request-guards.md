@@ -195,6 +195,13 @@ cool-down off; the ceiling is 86400. It is perimeter: an agent's own
 `reload_profiles` cannot change it, and a federation ingress carries its
 source's. Held in memory, like the labels, so a gateway restart forgets both.
 
+A label records its profile from the request that set it, so a session deleted
+while its flagged response is in flight still starts the window. The new
+sessions admitted unknown are kept in a table of their own, at most 10,000;
+past that the oldest is dropped and, until its window would have closed, any
+session of that profile without an entry reads unknown too. A flood of
+`initialize` calls costs only the profile that sends it.
+
 The first mark on a session is logged once, with the `call_ref` of the call
 whose response carried the flag, so the audit row that tainted it can be
 found.
@@ -291,7 +298,7 @@ code and nothing else:
 | `other` | judge | A refusal with no listed reason, or an answer that was not an explicit allow. |
 | `arguments_flagged` | layers | L1, L2 or L3 flagged the arguments. |
 | `arguments_unjudged` | layers | The layers could not finish reading the arguments. |
-| `session_flagged` | gateway | `refuse_when` or `refuse_when_flagged` lists a label this session carries (`flagged_delivery`, `tripped`), or it sent no session ID. |
+| `session_flagged` | gateway | `refuse_when` or `refuse_when_flagged` lists a label this session carries (`flagged_delivery`, `tripped`), or the session is unknown: it sent no session ID, or it was minted or adopted within the profile's `session_mark_cooldown_seconds` of a label on another of its sessions (#900). |
 | `session_credential_seen` | gateway | `refuse_when` lists `credential_seen`, and this session was delivered a credential. |
 | `gatekeeper_unavailable` | gateway | No judge is configured, or it failed, timed out, answered off-schema or leaked its canary. |
 
