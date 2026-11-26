@@ -1060,7 +1060,9 @@ def flush_store() -> None:
     try:
         save_git_verdicts(rows, perimeter_stamp())
     except Exception as exc:
-        logger.warning("git judge: verdict store unwritten: %s", exc_kind(exc))
+        logger.warning(
+            "git judge: verdict store unwritten: %s at %s", exc_kind(exc), exc_where(exc)
+        )
 
 
 def reset_git_verdicts() -> None:
