@@ -180,14 +180,20 @@ beforehand, send `initialize` for a new one, or present any well-formed ID the
 gateway never issued and have it adopted. Each would read clean (#900).
 
 So a profile has a cool-down. For `session_mark_cooldown_seconds` (default
-1800, 30 minutes) after any session of the profile is labelled, **every other
-session of that profile** reads **unknown**, whether it was live already,
-minted since or adopted: the same state as a client that sends no session ID.
-`refuse_when` and `refuse_when_flagged` refuse its guarded calls with
-`session_flagged`, and the judge is told the session is unknown. The session
-that was labelled keeps reading its own labels. Each later label restarts the
-window, from the session that set it. When the window passes, every session
-reads its own labels again.
+1800, 30 minutes) after a session of the profile is given a label the
+profile's guards refuse on (its `refuse_when` and `refuse_when_flagged`, request
+and response guards together), **every other session of that profile** reads
+**unknown**, whether it was live already, minted since or adopted: the same
+state as a client that sends no session ID. `refuse_when` and
+`refuse_when_flagged` refuse its guarded calls with `session_flagged`, and the
+judge is told the session is unknown. A label the profile does not refuse on
+opens no window, so one credential-shaped read does not lock every seat.
+
+The session whose label opened the window owns it until it closes, and keeps
+reading its own labels. A later refusing label on any session only moves the
+end of the window later, never earlier, and never hands it to that session: an
+agent cannot give the window to a second session by getting that one a label
+of its own. When the window passes, every session reads its own labels again.
 
 That includes a person's other seat on the same profile: one mark costs every
 session of the profile its guarded calls for the window. Give seats that must
@@ -296,7 +302,7 @@ code and nothing else:
 | `other` | judge | A refusal with no listed reason, or an answer that was not an explicit allow. |
 | `arguments_flagged` | layers | L1, L2 or L3 flagged the arguments. |
 | `arguments_unjudged` | layers | The layers could not finish reading the arguments. |
-| `session_flagged` | gateway | `refuse_when` or `refuse_when_flagged` lists a label this session carries (`flagged_delivery`, `tripped`), or the session is unknown: it sent no session ID, or another session of its profile was labelled within the profile's `session_mark_cooldown_seconds` (#900). |
+| `session_flagged` | gateway | `refuse_when` or `refuse_when_flagged` lists a label this session carries (`flagged_delivery`, `tripped`), or the session is unknown: it sent no session ID, or another session of its profile was given a refusing label within the profile's `session_mark_cooldown_seconds` (#900). On `/proxy/http` there is no session, so the labels are always unknown there. |
 | `session_credential_seen` | gateway | `refuse_when` lists `credential_seen`, and this session was delivered a credential. |
 | `gatekeeper_unavailable` | gateway | No judge is configured, or it failed, timed out, answered off-schema or leaked its canary. |
 

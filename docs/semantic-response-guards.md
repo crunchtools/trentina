@@ -179,7 +179,7 @@ agent.
 | `other` | judge | A refusal with no listed reason, or an answer that was not an explicit allow. |
 | `uninspectable_response` | gateway | The result carries a content block the judge cannot read as text (an image, audio, a binary blob, a resource link, or any block type other than text), so the policy cannot be checked against it. |
 | `response_oversize` | gateway | The result is too large to judge in one admission window (over `Config.admission_tokens`). It is refused, not truncated. |
-| `session_flagged` | gateway | `refuse_when` or `refuse_when_flagged` lists a label this session carries (`flagged_delivery`, `tripped`), or the session is unknown: it sent no session ID, or another session of its profile was labelled within the profile's `session_mark_cooldown_seconds` (#900). |
+| `session_flagged` | gateway | `refuse_when` or `refuse_when_flagged` lists a label this session carries (`flagged_delivery`, `tripped`), or the session is unknown: it sent no session ID, or another session of its profile was given a refusing label within the profile's `session_mark_cooldown_seconds` (#900). On `/proxy/http` there is no session, so the labels are always unknown there. |
 | `session_credential_seen` | gateway | `refuse_when` lists `credential_seen`, and this session was delivered a credential. |
 | `gatekeeper_unavailable` | gateway | No judge is configured, or it failed, timed out, answered off-schema or leaked its canary. |
 

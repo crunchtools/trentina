@@ -1284,3 +1284,10 @@ path = "src/trentina/gateway/session_marks.py"
 pattern = "clear"
 justification = "A test reset of this module's own state (three table clears and the unknown-window reset, #900); verdict_cache.reset_verdict_cache resets different tables in the same shape"
 classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "src/trentina/unpack/alphabets.py"
+item = "decode_base2048"
+justification = "Base2048 decoding shares only a guard-then-branch-then-store statement shape with discovery._index, paging and session_marks._open_window (#900, which opens or extends a profile's cool-down); the discovery side is already excepted for the same reason, and no logic is common"
+classification = "gourmand_bug"

@@ -25,12 +25,14 @@ from trentina.gateway.context import (
     current_session_profile,
     session_fingerprint,
 )
+from trentina.gateway.gatekeeper import CallFacts, session_refusal
 from trentina.gateway.profile import (
     SESSION_MARK_COOLDOWN_DEFAULT,
     SESSION_MARK_COOLDOWN_MAX,
     AuthConfig,
     Backend,
     Profile,
+    SemanticGuardsConfig,
 )
 from trentina.gateway.session_marks import SessionLabel as L
 from trentina.gateway.sessions import SessionRegistry
@@ -44,12 +46,15 @@ def _at(t: float) -> Any:
     return patch.object(session_marks.time, "monotonic", return_value=t)
 
 
+ALL = frozenset(L)
+
+
 @contextmanager
-def _as(profile: str, cooldown: float = WINDOW) -> Iterator[None]:
+def _as(profile: str, cooldown: float = WINDOW, refusing: frozenset[L] = ALL) -> Iterator[None]:
     """Inside a request of *profile*, as the gateway edge binds one."""
     token = current_session_profile.set("")
     try:
-        session_marks.bind(profile, cooldown)
+        session_marks.bind(profile, cooldown, refusing)
         yield
     finally:
         current_session_profile.reset(token)
@@ -86,16 +91,53 @@ class TestWindow:
         with _as("bob"), _at(T0 + 60):
             assert session_marks.labels("fp-bob") == frozenset()
 
-    def test_a_later_mark_moves_the_window_to_its_session(self) -> None:
+    def test_flagged_then_a_credential_elsewhere_does_not_move_the_window(self) -> None:
+        """Re-review: A is flagged; B picks up ``credential_seen``, which
+        ``refuse_when_flagged`` does not refuse. B must not take the window."""
+        guards = _guards(refuse_when_flagged=True)
+        with _as("alice", refusing=guards.refusing_labels):
+            with _at(T0):
+                session_marks.mark("fp-a", L.FLAGGED_DELIVERY)
+            with _at(T0 + 10):
+                session_marks.mark("fp-b", L.CREDENTIAL_SEEN)
+                assert session_refusal(guards, _facts("fp-b")) == "session_flagged"
+                assert session_refusal(guards, _facts("fp-a")) == "session_flagged"
+
+    def test_tripped_then_a_flag_elsewhere_does_not_move_the_window(self) -> None:
+        guards = _guards(refuse_when=[L.TRIPPED])
+        with _as("alice", refusing=guards.refusing_labels):
+            with _at(T0):
+                session_marks.mark("fp-a", L.TRIPPED)
+            with _at(T0 + 10):
+                session_marks.mark("fp-b", L.FLAGGED_DELIVERY)
+                assert session_refusal(guards, _facts("fp-b")) == "session_flagged"
+
+    def test_a_label_the_profile_does_not_refuse_opens_no_window(self) -> None:
+        with _as("alice", refusing=frozenset({L.TRIPPED})), _at(T0):
+            session_marks.mark("fp-a", L.CREDENTIAL_SEEN)
+            assert session_marks.labels("fp-b") == frozenset()
+        with _as("bob", refusing=frozenset()), _at(T0):
+            session_marks.mark("fp-c", L.TRIPPED)
+            assert session_marks.labels("fp-d") == frozenset()
+
+    def test_a_later_refusing_mark_extends_the_window_and_keeps_its_owner(self) -> None:
         with _as("alice"):
             with _at(T0):
-                session_marks.mark("fp-a", L.CREDENTIAL_SEEN)
+                session_marks.mark("fp-a", L.TRIPPED)
             with _at(T0 + 1000):
-                session_marks.mark("fp-b", L.CREDENTIAL_SEEN)
+                session_marks.mark("fp-b", L.TRIPPED)
             with _at(T0 + WINDOW + 10):
-                assert session_marks.labels("fp-a") is None
-                assert session_marks.labels("fp-b") == {L.CREDENTIAL_SEEN}
+                assert session_marks._windows["alice"] == (T0 + 1000 + WINDOW, "fp-a")
+                assert session_marks.labels("fp-a") == {L.TRIPPED}
+                assert session_marks.labels("fp-b") is None
                 assert session_marks.labels("fp-c") is None
+            with _at(T0 + 1000 + WINDOW):
+                assert session_marks.labels("fp-b") == {L.TRIPPED}
+
+    def test_a_mark_with_no_profile_is_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        session_marks.mark("fp-orphan", L.TRIPPED)
+        assert "no profile bound" in caplog.text
+        assert session_marks._windows == {}
 
     def test_zero_turns_it_off(self) -> None:
         with _as("alice", cooldown=0), _at(T0):
@@ -130,12 +172,30 @@ class TestWindow:
             assert session_marks.labels("fp-carol") == {L.CREDENTIAL_SEEN}
 
 
+def _guards(**refusal: Any) -> SemanticGuardsConfig:
+    return SemanticGuardsConfig(policy="p", tools={"mail": ["send"]}, **refusal)
+
+
+def _facts(session: str) -> CallFacts:
+    return CallFacts(
+        backend="mail",
+        tool="send",
+        destination=None,
+        destination_kind=None,
+        first_contact=None,
+        session_labels=session_marks.labels(session),
+    )
+
+
 def _profile(name: str = "alice", cooldown: float | None = None) -> Profile:
     extra = {} if cooldown is None else {"session_mark_cooldown_seconds": cooldown}
     profile = Profile(
         name=name,
         auth=AuthConfig(bearer_token_env="A"),
         backends={"mcp-slack": Backend(url="http://mcp-slack:8000/mcp")},
+        semantic_request_guards=SemanticGuardsConfig(
+            policy="p", tools={"mcp-slack": ["post_message"]}, refuse_when_flagged=True
+        ),
         **extra,
     )
     profile.auth.bearer_token = SecretStr(f"{name}-token")

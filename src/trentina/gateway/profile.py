@@ -3758,12 +3758,12 @@ class Profile(BaseModel):
         ge=0,
         le=SESSION_MARK_COOLDOWN_MAX,
         description=(
-            "For this long after any session of the profile is labelled "
-            "(``flagged_delivery``, ``tripped``, ``credential_seen``), every "
-            "other session of the profile, live or newly minted or adopted, "
-            "reads unknown, so ``refuse_when`` refuses its guarded calls until "
-            "the window passes (#900). Moving to another session must not shed "
-            "a label. 0 turns it off."
+            "For this long after a session of the profile is given a label its "
+            "semantic guards refuse on (``refuse_when``, ``refuse_when_flagged``), "
+            "every other session of the profile, live or newly minted or "
+            "adopted, reads unknown, so those guards refuse its calls until the "
+            "window passes (#900). The first such session owns the window; a "
+            "later refusing label only extends it. 0 turns it off."
         ),
     )
     semantic_request_guards: SemanticGuardsConfig | None = Field(
@@ -4043,6 +4043,17 @@ class Profile(BaseModel):
         if problems:
             raise ValueError(f"derived federation ingress: {'; '.join(problems)}")
         return self
+
+    @property
+    def refusing_labels(self) -> frozenset[SessionLabel]:
+        """Every label either semantic guard refuses on unasked (#900)."""
+        return frozenset().union(
+            *(
+                guards.refusing_labels
+                for guards in (self.semantic_request_guards, self.semantic_response_guards)
+                if guards is not None
+            )
+        )
 
     @property
     def grant_owner(self) -> str:
