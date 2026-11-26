@@ -39,9 +39,11 @@ class TestServerRegistration:
         last thing on a new gateway that needed a shell. ``federation_trust``
         (#640) made it 19: pinning a peer from what it signs at the link, so
         the approval page can say the pin was checked rather than claimed.
+        ``session_marks_clear`` (a1724) made it 20: a false positive's
+        cool-down otherwise held a profile until a restart.
         """
         tools = await mcp.list_tools()
-        assert len(tools) == 19, f"Expected 19 tools, got {len(tools)}"
+        assert len(tools) == 20, f"Expected 20 tools, got {len(tools)}"
 
     async def test_every_family_takes_a_mode(self) -> None:
         """The mode is an argument the policy checks, not a name the agent picks."""
@@ -134,6 +136,7 @@ class TestServerRegistration:
             "tool_pins_tool",
             "tool_visibility_tool",
             "audit_verify_tool",
+            "session_marks_clear_tool",
             "federation_keygen_tool",
             "federation_trust_tool",
             "profile_token_tool",
