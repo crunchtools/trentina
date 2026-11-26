@@ -146,11 +146,11 @@ under `/data`, which no file tool can read. See
 
 ### Sealing `/data` (#868)
 
-Federation private keys (`/data/keys`) and the secret store (`/data/secrets`)
-are sealed under one key-encryption key, `TRENTINA_SECRETS_KEK_FILE`, which
-must not live on `/data`. One key per line, newest first, each at least 32
-characters (`openssl rand -base64 48`); each line is stretched with HKDF into a
-Fernet key and the list is a `MultiFernet`. At startup every file in both
+Federation private keys (`/data/keys`), the secret store (`/data/secrets`) and
+the git chunk key (`/data/git`) are sealed under one key-encryption key,
+`TRENTINA_SECRETS_KEK_FILE`, which must not live on `/data`. One key per line,
+newest first, each at least 32 characters (`openssl rand -base64 48`); each line is stretched with HKDF into a
+Fernet key and the list is a `MultiFernet`. At startup every file in the
 stores is read: a plaintext one is sealed (copied to `<name>.bak`, sealed to a
 staged file, fsynced, renamed, read back, then the `.bak` removed), and one
 sealed under any line but the first is resealed under the first.
@@ -160,7 +160,7 @@ under the configured lines. If one does not, the key is wrong or a new first
 line is mistyped: nothing is sealed or resealed (sealing under a wrong key would
 lock out the right one), and the warning names the files and an 8-hex
 fingerprint of the first key, the same on every start with the same key. A full
-disk stops sealing the same way. Both stores are locked (`flock` on the
+disk stops sealing the same way. The stores are locked (`flock` on the
 directory) while the gateway seals, and `secret_store put` takes the same lock.
 
 To rotate: put the new key on a new first line, restart, and once the startup

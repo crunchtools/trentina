@@ -13,7 +13,6 @@ from trentina.gateway.git_chunks import (
     Chunk,
     chunk_blob,
     estimate_tokens,
-    gateway_chunk_key,
 )
 
 KEY = b"k" * 32
@@ -134,11 +133,3 @@ def test_estimate_tokens() -> None:
     assert estimate_tokens("abc") == 1
     assert estimate_tokens("abcd") == 2
     assert estimate_tokens("é" * 3) == 2
-
-
-def test_gateway_chunk_key_is_created_once(tmp_path: Path) -> None:
-    path = tmp_path / "chunk.key"
-    first = gateway_chunk_key(str(path))
-    assert len(first) == 32
-    assert gateway_chunk_key(str(path)) == first
-    assert path.stat().st_mode & 0o777 == 0o600

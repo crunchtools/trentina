@@ -1,10 +1,11 @@
 """Sealing the secrets the gateway keeps on its data volume (#868).
 
-Federation private keys (``key_store``) and profile secrets (``secret_store``)
-were 0600 plaintext under ``/data``, so a copy of the volume was a copy of
-every credential in it. Each is now sealed under one key-encryption key, the
-KEK, which never touches the volume: ``TRENTINA_SECRETS_KEK`` or, preferably,
-the file ``TRENTINA_SECRETS_KEK_FILE`` names.
+Federation private keys (``key_store``), profile secrets (``secret_store``) and
+the git chunk key (``git_chunks``) were 0600 plaintext under ``/data``, so a
+copy of the volume was a copy of every credential in it. Each is now sealed
+under one key-encryption key, the KEK, which never touches the volume:
+``TRENTINA_SECRETS_KEK`` or, preferably, the file ``TRENTINA_SECRETS_KEK_FILE``
+names.
 
 The KEK is a list, one key per line, newest first. Each line is stretched to a
 Fernet key with HKDF and the list becomes a ``MultiFernet``: the first key
@@ -63,8 +64,9 @@ BACKUP_SUFFIX = ".bak"
 #: cuts it short; each may hold plaintext.
 _LEFTOVER_SUFFIXES = (BACKUP_SUFFIX, ".staged", BACKUP_SUFFIX + ".staged")
 
-#: The stores whose every file is sealed, by directory under ``<data>``.
-SEALED_DIRS = ("keys", "secrets")
+#: The stores whose every file is sealed, by directory under ``<data>``: federation
+#: keys, profile secrets and the git chunk key (``git_chunks.CHUNK_KEY_STORE``).
+SEALED_DIRS = ("keys", "secrets", "git")
 
 _HKDF_SALT = b"trentina-at-rest"
 

@@ -59,6 +59,7 @@ from ..unpack.git_pack import (
     PackObject,
 )
 from ..unpack.git_pack import REASONS as PACK_REASONS
+from .errors import ProfileConfigError
 from .git_chunks import gateway_chunk_key
 from .git_judge import MAX_OBJECT_BYTES, GitJudge, flush_store
 from .git_wire import (
@@ -217,14 +218,28 @@ _chunk_secret: bytes | None = None
 
 
 def chunk_secret() -> bytes:
-    """The gateway's own key for chunk boundaries, beside the perimeter store."""
+    """The gateway's own key for chunk boundaries, in the sealed stores."""
     global _chunk_secret
     if _chunk_secret is None:
-        config = get_config()
-        config.ensure_perimeter_db_dir()
-        path = Path(config.perimeter_db_path).with_name("git-chunk.key")
-        _chunk_secret = gateway_chunk_key(str(path))
+        _chunk_secret = gateway_chunk_key(legacy=_legacy_chunk_key())
     return _chunk_secret
+
+
+def _legacy_chunk_key() -> Path:
+    """Where the key was kept before a1706: 0600 plaintext beside the perimeter store."""
+    return Path(get_config().perimeter_db_path).with_name("git-chunk.key")
+
+
+def migrate_chunk_key() -> None:
+    """At startup, after ``at_rest.configure``: move a plaintext key into the
+    sealed store. A gateway that never had one makes none until a judged fetch
+    asks; a key that cannot be moved is said so, and the start goes on."""
+    if not _legacy_chunk_key().exists():
+        return
+    try:
+        chunk_secret()
+    except (OSError, ProfileConfigError) as exc:
+        logger.warning("git chunk key: not moved into the sealed store: %s", exc_kind(exc))
 
 
 # --- ref names flagged in a listing, named on the next fetch --------------------
