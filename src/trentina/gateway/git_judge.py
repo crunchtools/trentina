@@ -18,8 +18,8 @@ is new to the profile's judge rather than by the size of a history:
   ``Config.git_suspicious``, so a borderline chunk is never diluted by its
   neighbours; the others go to L3 in groups of
   at most ``GROUP_TOKENS``, and a clean group is credited to each unit in it.
-  A flagged group is debited to each unit in it, never asked again unit by
-  unit: L3 reads each unit once.
+  A flagged group is debited to the pieces L3 names, and each other unit is
+  judged again alone; an answer naming none is debited to every unit (#932).
 - **Files at the tip, whole.** A text blob at the tip of a wanted commit (or a
   blob wanted by id, as a partial clone's lazy fetch asks for it) of at most
   ``Config.whole_tokens`` is also judged whole at L3: the file an agent opens.
@@ -714,9 +714,11 @@ class GitJudge:
     async def _l3(self, units: list[Unit], *, whole: bool = False) -> None:
         """Judge ``units`` together and settle each by the answer.
 
-        L3 reads each unit once: a clean group is credited to each unit in
-        it and a flagged group is debited to each, never asked again unit by
-        unit to place the finding.
+        A clean group is credited to each unit in it. A flagged group is
+        debited to the pieces L3 names, and each piece it does not name is
+        judged again alone, never cleared by the group's answer: a piece can
+        name its neighbour, but not its own read (#932). An answer that names
+        no piece, or one that does not exist, is debited to every unit.
         """
         self.stats["l3_whole" if whole else "l3_groups" if len(units) > 1 else "l3_alone"] += 1
         answer = await self._ask(units, whole=whole)
@@ -727,12 +729,20 @@ class GitJudge:
             for unit in units:
                 self._settle(unit, answer if "gap" in answer else CLEAN)
             return
+        from ..quarantine.agent import flagged_pieces
         from ..quarantine.prompts import RISK_LEVELS
 
         risk = answer.get("risk_level")
         risk = risk if risk in RISK_LEVELS else "high"
-        for unit in units:
-            self._settle(unit, _flag("L3", risk, unit.screened, answer))
+        named = flagged_pieces(answer, len(units)) if len(units) > 1 else None
+        for n, unit in enumerate(units, 1):
+            if named is None or n in named:
+                self._settle(unit, _flag("L3", risk, unit.screened, answer))
+        if named is not None:
+            # One at a time, inside this call's slot: L3_CALLS still bounds them.
+            for n, unit in enumerate(units, 1):
+                if n not in named:
+                    await self._l3([unit])
 
     def _settle_flagged(self, unit: Unit, prior: dict[str, Any], answer: dict[str, Any]) -> None:
         """L1 or L2 flagged ``unit`` and L3 has read it: the flag stands."""
