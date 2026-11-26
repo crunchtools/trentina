@@ -785,6 +785,46 @@ async def test_a_large_object_cancelled_waiting_for_its_thread_is_a_deadline_gap
     assert judge.outcome().unjudged == [("blob", blob.oid, "deadline")]
 
 
+async def test_a_cancelled_read_keeps_its_profiles_share_until_its_thread_is_done(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started, release = threading.Event(), threading.Event()
+    real = git_judge.chunk_blob
+
+    def blocked(content: bytes, secret: bytes) -> Any:
+        started.set()
+        release.wait(10)
+        return real(content, secret)
+
+    monkeypatch.setattr(git_judge, "chunk_blob", blocked)
+    judge = _fresh()
+    share = git_judge._read_share(judge.profile.name)
+    adding = asyncio.ensure_future(judge.add(_blob("a short line\n" * 1000)))
+    while not started.is_set():
+        await asyncio.sleep(0.01)
+    adding.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await adding
+    assert share.locked(), "the thread is still reading"
+    release.set()
+    for _ in range(500):
+        if not share.locked():
+            break
+        await asyncio.sleep(0.01)
+    assert not share.locked(), "given back once the thread finished"
+
+
+def test_a_unit_past_the_backlog_is_unjudged_and_not_queued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    judge = _fresh()
+    blob = _blob("an ordinary file that does not fit\n")
+    monkeypatch.setattr(git_judge, "MAX_BACKLOG_BYTES", 10)
+    judge.submit(blob)
+    assert judge.outcome().unjudged == [("blob", blob.oid, "backlog")]
+    assert judge.stats["units"] == 0 and judge._queue.empty()
+
+
 async def test_a_large_object_cancelled_mid_read_is_a_deadline_gap_and_its_late_result_is_dropped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -185,6 +185,13 @@ def _read_share(profile: str) -> asyncio.Semaphore:
     return share
 
 
+def _settle_read(share: asyncio.Semaphore, done: asyncio.Future[Any]) -> None:
+    """Give a finished read's share back; a result nobody awaited is dropped."""
+    share.release()
+    if not done.cancelled():
+        done.exception()  # retrieved, so an abandoned read logs no warning
+
+
 def verdict_ttl() -> float:
     """Seconds a git verdict is served: ``VERDICT_TTL``, or less when the
     operator set ``TRENTINA_VERDICT_TTL_HOURS``."""
@@ -375,10 +382,8 @@ class GitJudge:
         if (state := self._begin(obj)) is None:
             return
         try:
-            async with self._lane, _read_share(self.profile.name):
-                read = await asyncio.get_running_loop().run_in_executor(
-                    _POOL, self._read_object, obj
-                )
+            async with self._lane:
+                read = await self._read_on_share(obj)
         except asyncio.CancelledError:
             # Waiting for a thread or reading on one: either way unjudged. A
             # thread already reading finishes alone and its result is dropped.
@@ -391,6 +396,23 @@ class GitJudge:
             self._add(unit, obj.oid, state)
             if count % ADD_YIELD == 0:
                 await asyncio.sleep(0)
+
+    async def _read_on_share(self, obj: PackObject) -> _Read:
+        """``_read_object`` on a pool thread, under the profile's share.
+
+        The share is given back when the thread is done, not when the caller
+        stops waiting: a cancelled read goes on in its thread, and letting the
+        permit go then would let the profile start a second.
+        """
+        share = _read_share(self.profile.name)
+        await share.acquire()
+        try:
+            reading = asyncio.get_running_loop().run_in_executor(_POOL, self._read_object, obj)
+        except BaseException:
+            share.release()
+            raise
+        reading.add_done_callback(lambda done: _settle_read(share, done))
+        return await asyncio.shield(reading)
 
     def _begin(self, obj: PackObject) -> ObjectState | None:
         if obj.oid in self._objects:
