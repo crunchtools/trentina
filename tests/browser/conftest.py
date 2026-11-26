@@ -10,7 +10,8 @@ front of the routes over real HTTP, with nothing in between.
 Kept out of the default run (``pyproject.toml`` ignores ``tests/browser``)
 because the image that runs the default suite has no browser. CI runs it as
 its own job and passes ``--browser-path``, which turns a missing browser into
-a failure instead of a skip.
+a failure instead of a skip. Playwright is imported, not importorskip'd, so a
+missing library fails too: it is the locked ``browser`` dependency group.
 """
 
 from __future__ import annotations
@@ -23,9 +24,8 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+import playwright.sync_api as playwright_api
 import pytest
-
-playwright_api = pytest.importorskip("playwright.sync_api")
 
 _DEFAULT_BROWSERS = ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser")
 

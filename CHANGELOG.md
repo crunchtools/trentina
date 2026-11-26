@@ -16,6 +16,13 @@ under that name.
 
 **Migration:** for a grant that opts in with `enforcement: flag`, re-clone every repository an agent works in. Judging does not reach back into a checkout, so history fetched before this release was read by no layer. Under `flag`, a v0 or v1 fetch that does not ask for `side-band-64k` is refused `sideband`; git always asks.
 
+### Security
+- The image builds OpenCV 5.1.0 from hash-pinned source with only core,
+  imgproc and imgcodecs, in place of the opencv-python-headless wheel, whose
+  bundled FFmpeg 9.0.2 carried CVE-2026-135736 and CVE-2026-135743 (critical)
+  plus about 18 High and Medium CVEs. The gateway never used video I/O; the
+  image now ships no FFmpeg at all.
+
 ## [6.31.0] - 2026-11-24
 
 ### Added
