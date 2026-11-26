@@ -334,6 +334,10 @@ ignore_missing_imports = true
 # and `uv sync` leaves it out unless asked.
 [dependency-groups]
 browser = ["playwright==1.65.1"]
+# numpy for the Containerfile's `opencv` stage to build cv2 against. A group
+# only so `uv export --only-group opencv-build` can export its locked entry;
+# it is the same numpy the project depends on, not a second pin.
+opencv-build = ["numpy>=1.24"]
 
 [tool.uv]
 # rapidocr requires `opencv-python`; we install `opencv-python-headless`
