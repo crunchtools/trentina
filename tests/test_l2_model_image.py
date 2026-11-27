@@ -6,8 +6,6 @@ import json
 import re
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parents[1]
 RELEASES = "https://github.com/crunchtools/trentina/releases/download/"
 ZERO = "0" * 64
@@ -37,10 +35,9 @@ def test_the_export_record_matches_the_containerfile() -> None:
     assert record()["url"] == url
 
 
-# While a1813's placeholders are in, the sha is all zeros. Filling it in turns
-# this XFAIL into an XPASS, which strict makes a failure: whoever fills it in
-# removes the marker, so the image can never ship with the placeholder quietly.
-@pytest.mark.xfail(strict=True, reason="a1813 fills the model sha")
+# Fails while a1813's placeholders are in: a release with them cannot build the
+# image (no such asset, and no tarball has the zero hash), so the pull request
+# that adds them stays red until the round's export fills them.
 def test_the_model_sha_is_not_the_placeholder() -> None:
     sha, url = containerfile_pin()
     assert sha != ZERO
