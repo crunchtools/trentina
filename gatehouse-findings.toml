@@ -108,14 +108,6 @@ status = "not-a-bug"
 reason = "Bounded and linear: at most 32 paths, each walking only the nodes on its own path (one visit per list element it crosses), so the cost is O(paths x matched nodes) over a result already capped at the backend response limit. Next to the transform and an L2 scan of the same result it is noise, and the unjudged path skips both. A trie would save microseconds for more code."
 
 [[findings]]
-agent = "constitution"
-category = "constitution"
-file = "pyproject.toml"
-evidence = "rebuild = \"on-change\""
-status = "not-a-bug"
-reason = "S4 and K6 rebuild an image so its base's errata reach production. trentina-l2-model ships FROM scratch: its only content is the ONNX export, fetched by checksum. The unpack stage's Hummingbird parent only runs tarfile and none of its bytes reach /model/, so a rebuild on a new parent or a new week reproduces the same files and fixes nothing. sdlc's on-change still rebuilds when any FROM is not pinned by digest (a1793, crunchtools/sdlc#271)."
-
-[[findings]]
 agent = "bugs"
 category = "bug"
 file = "scripts/l2-model/Containerfile"
