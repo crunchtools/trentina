@@ -15,6 +15,7 @@ under that name.
 
 ### Changed
 - **CI is the fleet's one `ci.yml` and nothing else (a1788).** The L2 exporter's lock is checked on every pull request by two `[tool.sdlc.ci]` checks, `l2-builder` and `l2-builder-imports`, which build the exporter's image and import what it imports; the exporter moved out of the root `Containerfile`'s `model-builder` stage into `scripts/l2-builder/Containerfile`, which the shipped image never used, and a test holds the two files to one model digest. The other seven workflows are retired, each because it ran repo code with a key (OpenRouter, Anthropic, RunPod, the signing key) or was a report for a person: live L3, the boundary-review eval, the mutation report, the decoy benchmarks, the wild-feed sample, the README demo and L2 training are run by hand as `docs/by-hand.md` says, and the Cockpit plugin RPM is no longer attached to each release (`make rpm` builds it).
+- **Live L3 and the boundary-review eval gate each release (a1807, #956).** They need provider keys that CI never holds, so `SECURITY.md`'s release checklist now asks for both to pass on `main`, run by hand as `docs/by-hand.md` says.
 
 ## [6.32.0] - 2026-11-26
 

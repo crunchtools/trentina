@@ -117,6 +117,7 @@ Before each release:
 - [ ] Dependencies scanned for CVEs
 - [ ] Container rebuilt with latest Hummingbird base
 - [ ] Gourmand passes (defensive_error_silencing check)
+- [ ] Live L3 on OpenRouter and the boundary-review eval pass on `main`, run by hand ([docs/by-hand.md](docs/by-hand.md#before-each-release)): CI holds no provider key, so nothing else runs them
 
 ## 5. Reporting Security Issues
 
