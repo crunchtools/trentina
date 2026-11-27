@@ -1,0 +1,28 @@
+# The L2 model as a data-only image: quay.io/crunchtools/trentina-l2-model, the
+# gated export of a training round (ONNX export, trentina-model.json, NOTICE,
+# training.json) under /model/. Nothing runs from it; the root Containerfile and
+# scripts/l2-builder/Containerfile COPY --from it by digest.
+#
+# It is built and signed by sdlc's image and promote jobs as an extra image
+# ([[tool.sdlc.images]] in pyproject.toml), on a trentina release. A new model is
+# a training round (docs/by-hand.md, "Training the L2 model"), a PR that changes
+# the checksum and URL here and in export.json, and then a second PR that
+# repins the new digest in Containerfile and scripts/l2-builder/Containerfile.
+#
+# The export arrives as a tarball of the export directory (its files at the
+# root of the archive), a release asset on this repository. ADD does not unpack
+# a remote archive, and a scratch image has no shell, so the extraction is a
+# builder stage from a registry sdlc allows. That image has no tar, so Python's
+# tarfile unpacks it.
+#
+# A1813-PLACEHOLDER: the URL and checksum below are placeholders until a1813
+# fills them from the round's export; scripts/l2-model/export.json carries the
+# same two values and tests/test_l2_model_image.py holds them together.
+FROM quay.io/hummingbird/python:3.14-builder@sha256:df20744183ad6dcf65a5ff32409a2120892e3ce92c95bd736cb64ab66117f830 AS unpack
+USER 0
+ADD --checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000 \
+    https://github.com/crunchtools/trentina/releases/download/A1813-PLACEHOLDER/l2-export.tar /export.tar
+RUN python -m tarfile -e /export.tar /out
+
+FROM scratch
+COPY --from=unpack /out/ /model/
