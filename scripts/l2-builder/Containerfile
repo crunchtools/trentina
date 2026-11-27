@@ -1,0 +1,35 @@
+# The L2 exporter's image: what a training round exports its fine-tune with
+# (scripts/export_l2_model.py), and nothing the shipped image uses. It was the
+# Containerfile's model-builder stage until a1788; on its own here it is built
+# by `sdlc l2-builder` on every pull request ([tool.sdlc.ci] in pyproject.toml),
+# so a lock that will not install fails there rather than at the next training
+# round. Build it from the repository root:
+#
+#   podman build -f scripts/l2-builder/Containerfile -t l2-builder .
+#
+# The shipped fine-tune as gated (export, manifest, NOTICE, training.json): the
+# same digest the root Containerfile pins; tests/test_l2_envelopes.py holds the
+# two pins together.
+FROM quay.io/crunchtools/trentina-l2-model@sha256:02c8a8ff165f1c133535f00523de68169c1c12c58632d415e2cd0e4c579ee4c6 AS l2-model
+
+# Builder variant: DNF and a shell, for the native libraries PyTorch needs.
+# Pinned to Python 3.14 and by digest, as every stage of the root Containerfile.
+FROM quay.io/hummingbird/python:3.14-builder@sha256:df20744183ad6dcf65a5ff32409a2120892e3ce92c95bd736cb64ab66117f830
+USER 0
+
+# The exporter's stack comes from a hashed lock (constitution XV.7, #871), so
+# every training round exports with the versions the last one did, not with
+# whatever was released that morning. --no-deps: the list is the whole resolved
+# set. The file carries its own index lines: PyPI, plus the CPU-only PyTorch
+# index for torch's +cpu wheel.
+COPY scripts/l2-export-requirements.txt /tmp/l2-export-requirements.txt
+RUN pip install --no-cache-dir --require-hashes --no-deps \
+    -r /tmp/l2-export-requirements.txt
+
+# HORIZON_REVISION is the base the shipped fine-tune started from, the
+# revision scripts/train_l2_model.py pins (tests/test_l2_envelopes.py holds the
+# two together). Changing it is a new training run, not a rebuild.
+COPY scripts/export_l2_model.py /usr/local/bin/export_l2_model.py
+ARG HORIZON_REVISION=3215a27edd62c5ba0bd786c57a9d243b2158e70e
+
+COPY --from=l2-model /model/ /models/prompt-injection-guard-small-ct/

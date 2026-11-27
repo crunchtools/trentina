@@ -1,4 +1,4 @@
-"""Run ``train_l2_model.py`` on one RunPod GPU pod, for the l2-train workflow.
+"""Run ``train_l2_model.py`` on one RunPod GPU pod, for a training round (docs/by-hand.md).
 
 The recipe was found on an RTX 4090 in Secure Cloud (docs/benchmark.md, GPU
 rounds); the run that ships trains on the same card, image and pip pins, so

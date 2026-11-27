@@ -24,7 +24,7 @@ the split rows: what is measured is what the cut loses. A few parts with no
 attack in them are judged too, as the false-positive floor.
 
 Sizes are in L2's tokens when a model is loaded (``CLASSIFIER_MODEL_PATH``)
-and in words when not, which is how the CI job runs it: L3 is what is
+and in words when not, which is how it is run by hand: L3 is what is
 measured, and L2's column is then empty.
 
     TRENTINA_MODEL_PROVIDER=openrouter QUARANTINE_MODEL=<judge> \\

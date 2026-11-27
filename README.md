@@ -156,7 +156,7 @@ pre-commit install          # wires the commit and push checks
 commands, what each costs, and what an exit code means. The host needs only
 `git`, `podman`, `pre-commit` and `gh` — every check runs from
 [python-sdlc](https://github.com/crunchtools/python-sdlc), the same image CI
-runs. The demo is recorded by [`demo.yml`](.github/workflows/demo.yml);
+runs. The demo is recorded [by hand](docs/by-hand.md);
 its fixtures are in [`docs/demo/`](docs/demo/).
 
 ## License

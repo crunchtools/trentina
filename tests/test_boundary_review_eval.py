@@ -1,7 +1,7 @@
 """The boundary-review eval suite is well-formed, and its grader grades (#90).
 
-No network: the model calls themselves run in CI's boundary-review job, only
-when ANTHROPIC_API_KEY is set. This keeps EVAL.yml, the fixtures and the
+No network: the model calls themselves are run by hand with ANTHROPIC_API_KEY
+set (docs/by-hand.md). This keeps EVAL.yml, the fixtures and the
 grading rules from rotting in between.
 """
 

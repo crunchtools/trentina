@@ -1,5 +1,5 @@
-# What scripts/export_l2_model.py needs in the Containerfile's model-builder
-# stage, which l2-train.yml builds to export each trained model. Compiled with
+# What scripts/export_l2_model.py needs in scripts/l2-builder/Containerfile,
+# the image each trained model is exported in. Compiled with
 # hashes into l2-export-requirements.txt; regenerate with the command in its
 # header.
 #

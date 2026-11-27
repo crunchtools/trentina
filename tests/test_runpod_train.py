@@ -1,4 +1,4 @@
-"""The RunPod driver the l2-train workflow trains through (scripts/runpod_train.py)."""
+"""The RunPod driver a training round trains through (scripts/runpod_train.py)."""
 
 from __future__ import annotations
 
