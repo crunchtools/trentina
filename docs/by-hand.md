@@ -25,6 +25,16 @@ holds a key runs reviewed code: check out `main`, not a branch.
 The weekly L2 training canary and its `l2-canary` alert issue are gone with
 `l2-train.yml`; the training round below is run when a model is wanted.
 
+## Before each release
+
+`live-l3` and `boundary-review-eval` gate a release (SECURITY.md's checklist):
+CI runs only their offline halves, so nothing else would notice a regression on
+the live OpenRouter path or in the boundary-review skill. Run both rows above
+on `main` at the commit being released, and say in the release pull request
+that they passed. Recurring keyed runs were weighed in crunchtools/trentina#956:
+CI would need an sdlc route that hands repo code a key, and a host run would
+need the keys placed on a host, so neither is done.
+
 ## Common setup
 
 Run from the repository root on `main`. Keys are placeholders. The model-driven
