@@ -15,11 +15,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-import yaml
 
 from scripts import mutation_advisory as ma
-
-WORKFLOW = Path(".github/workflows/mutation-advisory.yml")
 
 GUARDS = "src/trentina/gateway/guards.py"
 PENDING = "src/trentina/gateway/pending.py"
@@ -38,14 +35,6 @@ class TestTargets:
         named = set(ma.MODULES) | {t for tests in ma.MODULES.values() for t in tests}
         assert [p for p in sorted(named) if not Path(p).is_file()] == []
 
-    def test_the_workflow_path_filter_is_exactly_the_scope(self) -> None:
-        """A path in MODULES the filter lacks is a change no PR run ever sees;
-        one the filter has and MODULES lacks starts a run that mutates nothing."""
-        # PyYAML reads the bare key `on` as True.
-        triggers = yaml.safe_load(WORKFLOW.read_text())[True]
-        scope = set(ma.MODULES) | {t for tests in ma.MODULES.values() for t in tests}
-        assert set(triggers["pull_request"]["paths"]) == scope | ma.WHOLE_RUN
-
     def test_a_changed_module_selects_itself(self) -> None:
         assert ma._targets({GUARDS, "README.md"}) == [GUARDS]
 
@@ -54,7 +43,7 @@ class TestTargets:
         assert picked == sorted([PENDING, "src/trentina/gateway/approver.py"])
 
     def test_a_change_to_the_runner_selects_everything(self) -> None:
-        assert ma._targets({".github/workflows/mutation-advisory.yml"}) == sorted(ma.MODULES)
+        assert ma._targets({"scripts/mutation_advisory.py"}) == sorted(ma.MODULES)
 
     def test_an_unrelated_change_selects_nothing(self) -> None:
         assert ma._targets({"docs/approvals.md"}) == []

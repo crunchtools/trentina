@@ -443,7 +443,8 @@ next pick starts from a list rather than a search:
 
 Lakera Guard is an API, not a local model.
 
-**Trying another model.** Export it in the model-builder image with
+**Trying another model.** Export it in the exporter image
+(`scripts/l2-builder/Containerfile`) with
 `scripts/export_l2_model.py` (pinned revision, manifest naming the malicious
 outputs and threshold), mount the directory and set `CLASSIFIER_MODEL_PATH`.
 Score it with `--l2-only` above, then run `tests/test_l2_integration.py`
@@ -1259,7 +1260,7 @@ flagged (fetched pages 9 of 40, GitHub issues 5, monitoring records 3) and
 sweep pages, 19 and 20 of 40). Invented envelopes reproduce the effect:
 benign text at most 0.026 as prose flags 8 of 20 times as a GitHub issue.
 
-**The fine-tune.** `.github/workflows/l2-train.yml` builds a set from six
+**The fine-tune.** The training round (docs/by-hand.md) builds a set from six
 pinned permissive sources, none of them a set measured here, wraps benign
 and attack text alike in every envelope so the label follows the text,
 replays plain rows, fine-tunes Horizon and holds the result to the benign,
@@ -1443,7 +1444,7 @@ test` before you push") is flagged by the shipped judges far more often than
 the same instruction judged bare, which is how the packs were tuned and
 gated. Embedded in a document is the shape fetched content has. Two harness
 changes measure it; both need a provider key, and a keyed benchmark runs
-merged code only (`benchmark-decoys.yml`).
+merged code only, by hand (docs/by-hand.md).
 
 - `benchmarks/detonation.py --mode judge --briefing none|benign|malicious`
   puts the production briefing in front of each document: L1's real counts

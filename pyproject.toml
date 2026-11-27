@@ -387,7 +387,7 @@ env = { GEMINI_API_KEY = "test_key_for_ci" }
 paths = ["src"]
 
 [tool.sdlc.ci]
-checks = ["image", "image-tests", "browser-image", "browser"]
+checks = ["image", "image-tests", "browser-image", "browser", "l2-builder", "l2-builder-imports"]
 
 # The image the in-image tests run against; ci.yml's `image` job builds the published one.
 [tool.sdlc.ci.image]
@@ -432,6 +432,24 @@ image = "localhost/trentina-browser:sdlc"
 argv = [
   "python", "-m", "pytest", "-o", "addopts=", "-p", "no:cacheprovider",
   "tests/browser", "-v", "--browser-path", "/usr/bin/chromium",
+]
+
+# The L2 exporter's image (scripts/l2-builder/Containerfile), from its hashed
+# lock (#871): a lock that will not install -- a bad hash, a wheel missing for
+# 3.14, a dependency --no-deps left out -- fails the pull request, a Renovate
+# bump included, rather than the next training round. Importing what the
+# exporter imports shows nothing it needs was left out of the lock.
+[tool.sdlc.ci.l2-builder]
+kind = "image-build"
+containerfile = "scripts/l2-builder/Containerfile"
+tag = "localhost/trentina-l2-builder:sdlc"
+
+[tool.sdlc.ci.l2-builder-imports]
+kind = "command"
+image = "localhost/trentina-l2-builder:sdlc"
+argv = [
+  "python", "-c",
+  "import torch, transformers, sentencepiece, safetensors, huggingface_hub, optimum.exporters.onnx",
 ]
 
 

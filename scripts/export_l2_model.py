@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Export an L2 classifier for Trentina: pinned download, ONNX, manifest (#350).
 
-Runs in the Containerfile's model-builder stage, which has torch and optimum;
-the runtime image has neither. Also the way to try a candidate model: run it
-in that same builder image, mount the output directory into the gateway and
-point ``CLASSIFIER_MODEL_PATH`` at it.
+Runs in the exporter image (scripts/l2-builder/Containerfile), which has torch
+and optimum; the runtime image has neither. Also the way to try a candidate
+model: run it in that same image, mount the output directory into the gateway
+and point ``CLASSIFIER_MODEL_PATH`` at it.
 
     python scripts/export_l2_model.py --repo ORG/NAME --revision SHA \\
         --out /models/NAME --id NAME --threshold 0.5 --malicious-labels INJECTION

@@ -41,50 +41,15 @@
 #     quay.io/crunchtools/trentina
 
 # The shipped L2 model: Horizon fine-tuned on benign tool replies (#17),
-# trained and gated by .github/workflows/l2-train.yml (GHA run 40311268794,
-# commit b7fd870) and published as a scratch image holding the ONNX export,
-# its manifest, NOTICE and training.json. Pinned by digest: a new model is a
-# new run and a change to this line.
+# trained and gated by the l2-train workflow (GHA run 40311268794, commit
+# b7fd870) and published as a scratch image holding the ONNX export, its
+# manifest, NOTICE and training.json. Pinned by digest: a new model is a new
+# training round (docs/by-hand.md) and a change to this line, and to the same
+# line in scripts/l2-builder/Containerfile.
 FROM quay.io/crunchtools/trentina-l2-model@sha256:02c8a8ff165f1c133535f00523de68169c1c12c58632d415e2cd0e4c579ee4c6 AS l2-model
 
 # ============================================================
-# Stage 1: ONNX model conversion (Hummingbird builder — discarded)
-# Builder variant includes DNF for installing libstdc++ and
-# other native deps needed by PyTorch/numpy ONNX conversion.
-# ============================================================
-# Every stage is pinned to Python 3.14, not `latest`: the runtime stage copies
-# /usr/lib*/python3.14/site-packages, and when `latest` moved to 3.15 the
-# locked onnxruntime had no wheel for it and the build stopped. Moving to a new
-# Python is a deliberate change to these tags, the lock and those COPY lines.
-# Each base is also pinned by digest (constitution XV): a rebuild runs the
-# base a reviewed pull request named, and Dependabot's docker entry proposes
-# the next digest weekly instead of the tag moving under the build.
-FROM quay.io/hummingbird/python:3.14-builder@sha256:df20744183ad6dcf65a5ff32409a2120892e3ce92c95bd736cb64ab66117f830 AS model-builder
-USER 0
-
-# The exporter's stack comes from a hashed lock (constitution XV.7, #871), so
-# every training round exports with the versions the last one did, not with
-# whatever was released that morning. --no-deps for the same reason as `deps`
-# below: the list is the whole resolved set. The file carries its own index
-# lines: PyPI, plus the CPU-only PyTorch index for torch's +cpu wheel.
-COPY scripts/l2-export-requirements.txt /tmp/l2-export-requirements.txt
-RUN pip install --no-cache-dir --require-hashes --no-deps \
-    -r /tmp/l2-export-requirements.txt
-
-# The exporter stays for l2-train, which builds this stage to export what it
-# trains (scripts/export_l2_model.py); the image no longer exports a model
-# itself. HORIZON_REVISION is the base the shipped fine-tune started from,
-# the revision scripts/train_l2_model.py pins (tests/test_l2_envelopes.py
-# holds the two together). Changing it is a new training run, not a rebuild.
-COPY scripts/export_l2_model.py /usr/local/bin/export_l2_model.py
-ARG HORIZON_REVISION=3215a27edd62c5ba0bd786c57a9d243b2158e70e
-
-# The fine-tune as gated: export, manifest (threshold 0.5, window 512),
-# NOTICE and training.json.
-COPY --from=l2-model /model/ /models/prompt-injection-guard-small-ct/
-
-# ============================================================
-# Stage 2: the locked dependency set (builder variant -- has a shell)
+# Stage 1: the locked dependency set (builder variant -- has a shell)
 # Hummingbird default is distroless (no /bin/sh), so installing must happen
 # in builder stages. Installed packages are copied into the final distroless
 # image.
@@ -230,7 +195,7 @@ COPY src/ ./src/
 RUN uv pip install --no-cache --prefix=/project --no-deps '.[matrix,bridge]'
 
 # ============================================================
-# Stage 2b: the L2 gates: obfuscation (#362), then benign content (#411)
+# Stage 1b: the L2 gates: obfuscation (#362), then benign content (#411)
 # The Layer contract makes reading through obfuscation the model's job, so
 # the build proves it: every corpus attack is classified plain and under six
 # transforms by the classifier code this image runs, and the result is
@@ -239,13 +204,9 @@ RUN uv pip install --no-cache --prefix=/project --no-deps '.[matrix,bridge]'
 # and refuses to start on one under TRENTINA_REQUIRE_HARDENED.
 # ============================================================
 FROM deps AS l2-gate
-# Straight from the digest-pinned stage, NOT through model-builder, which held
-# the same bytes and nothing else this stage uses. Routed that way, nothing in
-# the default target depends on model-builder, so the builder skips it and its
-# torch + optimum + transformers + sentencepiece install (59 s measured cold,
-# of a four-minute build) stops happening on every build. The stage stays in
-# this file for `l2-train.yml --target model-builder`, which exports what it
-# trains and does need them.
+# Straight from the digest-pinned stage. The exporter's torch + optimum +
+# transformers + sentencepiece stack is not in this file at all: it is
+# scripts/l2-builder/Containerfile, which a training round exports with.
 COPY --from=l2-model /model/ /models/prompt-injection-guard-small-ct/
 COPY benchmarks/l2_obfuscation.py benchmarks/l2_benign.py /gate/benchmarks/
 COPY corpora/internal.py corpora/benign_ops.py /gate/corpora/
@@ -265,7 +226,7 @@ RUN cd /gate \
     python benchmarks/l2_benign.py --record
 
 # ============================================================
-# Stage 3: Runtime image (distroless — no shell, no dnf)
+# Stage 2: Runtime image (distroless — no shell, no dnf)
 # Constant settings first, then layers by how often they change: the base
 # libraries, the dependency set, the model, Trentina, and the version label
 # last -- declared first, a version change invalidated every layer after it.

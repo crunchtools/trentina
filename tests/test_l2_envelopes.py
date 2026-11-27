@@ -59,12 +59,23 @@ def test_slug() -> None:
 def test_training_starts_from_the_shipped_revision() -> None:
     """A fine-tune starts from the model production runs, or its gates compare nothing."""
     root = Path(__file__).resolve().parents[1]
-    pinned = re.search(r"ARG HORIZON_REVISION=([0-9a-f]{40})", (root / "Containerfile").read_text())
+    builder = (root / "scripts/l2-builder/Containerfile").read_text()
+    pinned = re.search(r"ARG HORIZON_REVISION=([0-9a-f]{40})", builder)
     trained = re.search(
         r'BASE_REVISION = "([0-9a-f]{40})"', (root / "scripts/train_l2_model.py").read_text()
     )
     assert pinned and trained
     assert pinned.group(1) == trained.group(1)
+
+
+def test_the_exporter_carries_the_shipped_model() -> None:
+    """The exporter's image and the shipped image pin one model, or a round compares two."""
+    root = Path(__file__).resolve().parents[1]
+    model = re.compile(r"^FROM (quay\.io/crunchtools/trentina-l2-model@sha256:[0-9a-f]{64}) ", re.M)
+    shipped = model.findall((root / "Containerfile").read_text())
+    builder = model.findall((root / "scripts/l2-builder/Containerfile").read_text())
+    assert len(shipped) == 1
+    assert builder == shipped
 
 
 def test_training_anchors_hold_no_held_out_case() -> None:

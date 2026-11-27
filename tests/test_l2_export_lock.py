@@ -1,4 +1,4 @@
-"""The model-builder stage installs the L2 exporter's stack from a hashed lock (#871)."""
+"""The exporter's image installs the L2 exporter's stack from a hashed lock (#871)."""
 
 from __future__ import annotations
 
@@ -9,12 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK = ROOT / "scripts/l2-export-requirements.txt"
 
 
-def test_model_builder_installs_only_from_the_lock() -> None:
+def test_the_exporter_installs_only_from_the_lock() -> None:
     """A bare `pip install torch` here exported against versions no test saw."""
-    containerfile = (ROOT / "Containerfile").read_text()
-    match = re.search(r"^FROM \S+ AS model-builder\n(.*?)(?=^FROM )", containerfile, re.M | re.S)
-    assert match
-    stage = match.group(1)
+    stage = (ROOT / "scripts/l2-builder/Containerfile").read_text()
     installs = re.findall(r"pip install(?:[^\n\\]|\\\n)*", stage)
     assert installs
     for line in installs:
@@ -24,7 +21,7 @@ def test_model_builder_installs_only_from_the_lock() -> None:
 
 
 def test_every_locked_requirement_is_exact_and_hashed() -> None:
-    """--require-hashes refuses the install otherwise; fail here, not in l2-train."""
+    """--require-hashes refuses the install otherwise; fail here, not in a training round."""
     entries = re.split(r"\n(?=[a-z0-9])", LOCK.read_text())
     reqs = [e for e in entries if re.match(r"[a-z0-9]", e)]
     assert reqs

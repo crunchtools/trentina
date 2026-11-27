@@ -3,7 +3,7 @@
 #
 #   OPENROUTER_API_KEY=... docs/demo/render.sh      # from the repository root
 #
-# Runs in GHA (.github/workflows/demo.yml); ENGINE=podman works locally.
+# Run by hand (docs/by-hand.md), with ENGINE=podman on a seat.
 # Starts the published gateway image with the fixture backend and the
 # poisoned recipe page on a private network, records trentina.tape against
 # it, renders flow.html frame by frame, and joins the two.

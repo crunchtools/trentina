@@ -11,7 +11,8 @@ the gateway under test is the shipped image with `profiles.yaml` below.
 | `shim.conf` | nginx in front of `/proxy/forward/bench/`: the fetch adapter sends no credential, so the shim adds the bench profile's bearer. The route's own auth is unchanged. |
 | `tool-profile.json` | The runner's tool profile. Claims are labels; they select nothing. |
 
-`.github/workflows/benchmark-decoys.yml` (`job: agent-egress-bench`) runs the
+The `agent-egress-bench` job of the retired `benchmark-decoys.yml`, run by hand
+(docs/by-hand.md), runs the
 fetch adapter in `flag` and in `block` and uploads each summary JSON. The bench
 is third-party code: its runner runs in a container with no provider key and
 no Docker socket, and reaches only the shim. The bench's

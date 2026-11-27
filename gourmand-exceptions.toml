@@ -140,7 +140,7 @@ classification = "by_design"
 [[exceptions]]
 check = "random_scripts"
 path = "docs/demo/**"
-justification = "docs/demo/ is the README demo (#256): render.sh drives it, backend.py is the stand-in Workspace server it records against, render_flow.py renders flow.html. Standalone scripts by design, run by .github/workflows/demo.yml, never imported"
+justification = "docs/demo/ is the README demo (#256): render.sh drives it, backend.py is the stand-in Workspace server it records against, render_flow.py renders flow.html. Standalone scripts by design, run by hand (docs/by-hand.md), never imported"
 classification = "by_design"
 
 [[exceptions]]

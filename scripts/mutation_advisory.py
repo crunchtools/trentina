@@ -94,7 +94,7 @@ _RESULT_LINE = re.compile(r"^\s+(\S+): (.+)$")
 
 
 #: A change to any of these re-runs every module: they change what a run means.
-WHOLE_RUN = {"scripts/mutation_advisory.py", ".github/workflows/mutation-advisory.yml"}
+WHOLE_RUN = {"scripts/mutation_advisory.py"}
 
 
 def _targets(changed: set[str]) -> list[str]:
