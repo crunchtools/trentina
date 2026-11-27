@@ -338,6 +338,10 @@ browser = ["playwright==1.65.1"]
 # only so `uv export --only-group opencv-build` can export its locked entry;
 # it is the same numpy the project depends on, not a second pin.
 opencv-build = ["numpy>=1.24"]
+# What scripts/l2_train_data.py reads the training sources with (parquet and
+# the hub): a training round's, never the gateway's, so a group and not a
+# dependency. `uv sync --locked --group l2-train` installs it from the lock.
+l2-train = ["pandas", "pyarrow", "huggingface-hub"]
 
 [tool.uv]
 # rapidocr requires `opencv-python`; we install `opencv-python-headless`

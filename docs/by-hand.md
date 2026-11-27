@@ -373,10 +373,11 @@ export RUNNER_TEMP=$(mktemp -d) GITHUB_ENV=$(mktemp)
 GITHUB_SHA=$(git rev-parse HEAD)
 ```
 
-1. The training set (pandas, pyarrow and huggingface_hub are not gateway dependencies):
+1. The training set, with the `l2-train` dependency group (pandas, pyarrow and
+   huggingface_hub, locked in `uv.lock`; not gateway dependencies):
 
 ```bash
-uv pip install pandas pyarrow huggingface_hub
+uv sync --locked --all-extras --group l2-train
 for size in "$PER_ENVELOPE" "$REPLAY"; do
   [[ "$size" =~ ^[1-9][0-9]+$ ]] || { echo "sizes must be whole numbers from 10" >&2; exit 1; }
 done

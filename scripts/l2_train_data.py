@@ -19,7 +19,7 @@ reads well there (run 40202667628: 4 to 41 of 221 benign_ops cases flagged).
 Each row is rendered the way the gateway renders a tool reply
 (``corpora.gateway_read.as_read``).
 
-    uv run python scripts/l2_train_data.py --out build/l2-train
+    uv run --group l2-train python scripts/l2_train_data.py --out build/l2-train
 
 Writes ``train.jsonl`` and ``val.jsonl`` (``{"text", "label", "shape", "distill"}``,
 and ``at`` on an attack) and
