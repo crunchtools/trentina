@@ -239,7 +239,7 @@ def _run_stages(content: str, stats: PipelineStats) -> PipelineResult:
     stats.forgery = detect_forgery(working)
     stats.addressed = detect_addressed(working)
 
-    size = len(content.encode("utf-8"))
+    size = len(content.encode("utf-8", "surrogatepass"))
     return PipelineResult(
         content=content,
         stats=stats,
