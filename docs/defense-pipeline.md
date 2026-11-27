@@ -719,6 +719,22 @@ one does; the rest name the benchmark that measured them.
     same opaque-stream case as gap 29's residual (#911).
 
     Tested (`tests/test_field_select.py`, `tests/test_coverage_gaps.py`).
+36. **L2 flags the ordinary content of a working fleet** (a1813, #957,
+    #869, #848). From mid-November, refusals rose about fivefold with no
+    change to the model, threshold or rules: the gateway began carrying
+    retail and order email, the source, CI logs, diffs and review comments
+    the developer seats read, the outbound code-review requests a reviewer
+    sends its model, and agents' own memory notes. L2 scored them 0.62 to
+    0.9998 and L3 called them clean, so under `block` each was refused by
+    L2 alone. Invented cases of each shape are in `corpora/benign_ops.py`
+    (`retail_email`, `order_email`, `marketing_html`, `source_code`,
+    `ci_log`, `pr_diff`, `review_comments`, `review_prompt`,
+    `review_request`, `agent_note`), scored on every image build outside the
+    gate's budget; the shipped model flags retail email 36 times in 40.
+    As with gap 31 the fix is the model, not the policy: the shapes are the
+    anchors and envelopes of the next fine-tune, and each leaves
+    `KNOWN_GAPS` with the model that passes it. Tested
+    (`tests/test_coverage_gaps.py`).
 
 ### Attack coverage by layer (Prompt Guard 2, 2026-06)
 

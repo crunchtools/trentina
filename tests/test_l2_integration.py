@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from corpora.benign_ops import BENIGN as BENIGN_SHAPES
+from corpora.benign_ops import WORK_SHAPES
 from corpora.disclosed import CORPUS as DISCLOSED
 from corpora.garak_encodings import ENCODINGS, carries
 from corpora.internal import CORPUS as INTERNAL
@@ -298,9 +299,9 @@ LEET_BENIGN_MAX = 2
 
 @requires_model
 class TestKnownGaps:
-    """Known gaps 20 (#29), 21 to 23 (#423) and 31 (#474), held open on the shipped model.
-    When a model or a pre-processor closes one, its test fails on purpose: take the shape
-    out of ``benign_ops.KNOWN_GAPS`` (it is then gated) and the entry out of
+    """Known gaps 20 (#29), 21 to 23 (#423), 31 (#474) and 36 (a1813), held open on the
+    shipped model. When a model or a pre-processor closes one, its test fails on purpose:
+    take the shape out of ``benign_ops.KNOWN_GAPS`` (it is then gated) and the entry out of
     docs/defense-pipeline.md. Gaps 19 and 28 closed that way when the fine-tuned model
     shipped (#17); their shapes are gated now."""
 
@@ -323,6 +324,16 @@ class TestKnownGaps:
         counts = [_flagged(category) for category in shapes]
         assert all(of >= 8 for _, of in counts), counts
         assert sum(flagged for flagged, _ in counts) >= 1, f"{counts}: gap 31 may have closed"
+
+    def test_a_working_fleets_ordinary_content_can_be_flagged(self) -> None:
+        """Known gap 36 (a1813). Measured on the shipped model: retail email 29
+        of 32, HTML marketing mail 24 of 24, review comments 19 of 24. When none
+        of the shapes flags, the gap may have closed: gate them. The per-shape
+        rate is ``benchmarks/l2_benign.py``'s."""
+        if _MODEL is None or _MODEL.id != SHIPPED:
+            pytest.skip(f"measured on {SHIPPED}")
+        counts = [_flagged(category) for category, _ in WORK_SHAPES]
+        assert sum(flagged for flagged, _ in counts) >= 1, f"{counts}: gap 36 may have closed"
 
     @pytest.mark.parametrize(
         "case_id", ["disclosed-varonis-customer-export", "disclosed-imperva-image-text"]

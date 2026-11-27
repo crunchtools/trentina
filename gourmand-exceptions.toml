@@ -1291,3 +1291,89 @@ path = "src/trentina/unpack/alphabets.py"
 item = "decode_base2048"
 justification = "Base2048 decoding shares only a guard-then-branch-then-store statement shape with discovery._index, paging and session_marks._open_window (#900, which opens or extends a profile's cool-down); the discovery side is already excepted for the same reason, and no logic is common"
 classification = "gourmand_bug"
+
+# --- a1813 benign corpus shapes ---
+
+[[exceptions]]
+check = "primitive_obsession"
+path = "corpora/benign_agent.py"
+justification = "The numbers are the data. This file generates invented agent memory notes and reviewer prompts (a1813): the literals are sizes, counts, id ranges, dates and line widths, each used once on the line of text it shapes. A named constant per value would be as many names as the f-strings already explain."
+classification = "by_design"
+
+[[exceptions]]
+check = "primitive_obsession"
+path = "corpora/benign_code.py"
+justification = "The numbers are the data. This file generates invented source files, CI logs, diffs and review comments (a1813): the literals are sizes, counts, id ranges, dates and line widths, each used once on the line of text it shapes. A named constant per value would be as many names as the f-strings already explain."
+classification = "by_design"
+
+[[exceptions]]
+check = "primitive_obsession"
+path = "corpora/benign_mail.py"
+justification = "The numbers are the data. This file generates invented retail and order email (a1813): the literals are sizes, counts, id ranges, dates and line widths, each used once on the line of text it shapes. A named constant per value would be as many names as the f-strings already explain."
+classification = "by_design"
+
+[[exceptions]]
+check = "absolute_paths"
+path = "corpora/benign_code.py"
+justification = "The paths are inside invented source files and CI logs (a1813): home directories and runtime directories as a traceback or a config file prints them. They are corpus text the classifier reads, never opened."
+classification = "by_design"
+
+[[exceptions]]
+check = "deferred_work"
+path = "corpora/benign_agent.py"
+justification = "The TODO is a code-comment marker inside an invented reviewer note (a1813), one of the comment styles a note can be wrapped in. It is corpus text, not deferred work in this file."
+classification = "by_design"
+
+[[exceptions]]
+check = "deferred_work"
+path = "corpora/benign_code.py"
+justification = "The TODO is a comment inside invented source-code text (a1813) and an entry in the pool of invented comments; a classifier must read such comments as benign. It is corpus text, not deferred work in this file."
+classification = "by_design"
+
+[[exceptions]]
+check = "hardcoded_years"
+path = "corpora/benign_agent.py"
+justification = "The year is part of invented dates and timestamps the generator emits (a1813), seeded and fixed so the corpus is byte-stable between runs. It is corpus text, not a clock value."
+classification = "by_design"
+
+[[exceptions]]
+check = "hardcoded_years"
+path = "corpora/benign_code.py"
+justification = "The year is part of invented dates and timestamps the generator emits (a1813), seeded and fixed so the corpus is byte-stable between runs. It is corpus text, not a clock value."
+classification = "by_design"
+
+[[exceptions]]
+check = "hardcoded_years"
+path = "corpora/benign_mail.py"
+justification = "The year is part of invented dates and timestamps the generator emits (a1813), seeded and fixed so the corpus is byte-stable between runs. It is corpus text, not a clock value."
+classification = "by_design"
+
+[[exceptions]]
+check = "assert_runtime_validation"
+path = "corpora/benign_code.py"
+justification = "The asserts are inside a generated pytest source string (a1813): invented test code the classifier reads. They are corpus text, never executed here."
+classification = "by_design"
+
+[[exceptions]]
+check = "single_use_helpers"
+path = "corpora/benign_mail.py"
+justification = "_hurl is called from a dozen HTML builders in this file (_hbtn, _hfooter, the hero, grid and social blocks), always inside f-strings; the check counts only _hbtn. Inlining it would repeat a randomness-consuming, ampersand-escaping expression in each, and the seeded output has to stay byte-identical."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "corpora/benign_agent.py"
+justification = "The match is a generic statement shape (draw from the seeded RNG, build a string or dict, return it) against unrelated functions elsewhere in the repo; no logic is common. The generator's randomness order is fixed by the byte-identical corpus, so the statements cannot be merged."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "corpora/benign_code.py"
+justification = "The match is a generic statement shape (draw from the seeded RNG, build a string or dict, return it) against unrelated functions elsewhere in the repo; no logic is common. The generator's randomness order is fixed by the byte-identical corpus, so the statements cannot be merged."
+classification = "by_design"
+
+[[exceptions]]
+check = "copy_paste_detection"
+path = "corpora/benign_mail.py"
+justification = "The match is a generic statement shape (draw from the seeded RNG, build a string or dict, return it) against unrelated functions elsewhere in the repo; no logic is common. The generator's randomness order is fixed by the byte-identical corpus, so the statements cannot be merged."
+classification = "by_design"

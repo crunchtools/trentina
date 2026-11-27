@@ -27,7 +27,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import SecretStr
 
-from corpora.benign_ops import BENIGN, CATEGORIES, KNOWN_GAPS
+from corpora.benign_ops import BENIGN, CATEGORIES, KNOWN_GAPS, WORK_SHAPES
 from corpora.garak_encodings import ENCODINGS
 from trentina import orchestrator as orchestrator_mod
 from trentina.gateway import client_egress, gatekeeper, git_transport, git_wire
@@ -317,19 +317,21 @@ def test_a_planted_credential_is_seen_encoded_reversed_or_in_part() -> None:
 
 
 def test_the_shapes_l2_is_known_to_flag_are_numbered_gaps_and_stay_in_the_corpus() -> None:
-    """Gap 31 (#474); 19 and 28 closed with the fine-tuned model (#17). That the model still flags
-    them needs the model, so that half is ``tests/test_l2_integration.py``, run inside the image.
+    """Gaps 31 (#474) and 36 (a1813); 19 and 28 closed with the fine-tuned model (#17).
+    That the model still flags them needs the model, so that half is
+    ``tests/test_l2_integration.py``, run inside the image.
     This half holds the list, the corpus and the document together: a shape
     cannot be dropped from the corpus, or moved into the gated budget, without
     the document changing in the same commit."""
     gaps = Path(__file__).parents[1].joinpath("docs/defense-pipeline.md").read_text()
     gaps = gaps[gaps.index("### Known gaps") :]
-    assert KNOWN_GAPS == (
+    assert (
         "security_docs",
         "detector_source",
         "issue_list",
         "created_issue",
-    )
+        *(name for name, _ in WORK_SHAPES),
+    ) == KNOWN_GAPS
     assert "meeting_notes_unlinked" in CATEGORIES, "gap 28 is the links, not the notes"
     assert "event_id_reply" in CATEGORIES, "gap 18 closed (#431): the shape is gated"
     for closed in ("journal_query", "syslog_search", "journal_query_100", "meeting_notes"):

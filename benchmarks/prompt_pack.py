@@ -75,8 +75,9 @@ if str(_REPO_ROOT) not in sys.path:
 
 from benchmarks.detonation import BRIEFINGS, CARRIERS_PER_INSERT, build_cases, document_id
 from benchmarks.provider_benchmark import ProviderReport, resolved_model, run_provider
-from corpora import fetch, jailbreak
+from corpora import benign_ops, fetch, jailbreak
 from corpora.detonation import BENIGN_INSERTS, CARRIERS, internal_inserts
+from corpora.gateway_read import as_read
 from corpora.internal import CORPUS, Case
 from trentina.defense import build_l3_briefing
 from trentina.l1 import run_l1
@@ -95,6 +96,7 @@ EMBEDDED_BENIGN = "embedded_benign"
 
 EMBEDDED_ATTACK = "embedded_attack"
 EMBEDDED_PREFIX = "emb-"
+OPS_PREFIX = "ops-"
 
 _UNPARSEABLE = ("MalformedResponseError", "TruncatedResponseError")
 
@@ -133,12 +135,39 @@ def embedded_cases(train: bool) -> list[Case]:
     ]
 
 
+def ops_cases(train: bool) -> list[Case]:
+    """``benign_ops``'s a1813 shapes as the judge reads them (#957, #869).
+
+    Retail and order email, source, CI logs, review comments and requests,
+    agent notes: benign content production refused, read through
+    ``gateway_read.as_read`` as the layers read it. Split by ``in_tuning``,
+    the split the L2 gate uses, so a case tuned on here is tuned on there.
+    """
+    shapes = {category for category, _ in benign_ops.WORK_SHAPES}
+    return [
+        Case(
+            id=f"{OPS_PREFIX}{case.id}",
+            category=benign_ops.CATEGORY_PREFIX + case.category,
+            payload=asyncio.run(as_read(case.payload, case.category)),
+            expect_injection=False,
+            source=f"generated, corpora/benign_ops.py (seed {benign_ops.SEED})",
+        )
+        for case in benign_ops.BENIGN
+        if case.category in shapes and benign_ops.in_tuning(case.id) == train
+    ]
+
+
 def split_cases(split: str, train_external: int, cache_dir: Path) -> list[Case]:
-    """The cases of ``train`` or ``held-out``: internal, embedded, external."""
+    """The cases of ``train`` or ``held-out``: internal, embedded, ops, external."""
     train = split == "train"
     internal = [case for case in CORPUS if in_train(case.id) == train]
     external = jailbreak.load("train" if train else "test", cache_dir=cache_dir)
-    return internal + embedded_cases(train) + (external[:train_external] if train else external)
+    return (
+        internal
+        + embedded_cases(train)
+        + ops_cases(train)
+        + (external[:train_external] if train else external)
+    )
 
 
 def voted(runs: list[ProviderReport]) -> ProviderReport:
@@ -413,8 +442,11 @@ async def main_async(args: argparse.Namespace) -> int:
         "votes": max(args.votes, 1),
         "briefing": args.briefing,
         "corpus": {
-            "internal": sum(1 for c in cases if not c.id.startswith(("ext-", EMBEDDED_PREFIX))),
+            "internal": sum(
+                1 for c in cases if not c.id.startswith(("ext-", EMBEDDED_PREFIX, OPS_PREFIX))
+            ),
             "embedded": sum(1 for c in cases if c.id.startswith(EMBEDDED_PREFIX)),
+            "ops": sum(1 for c in cases if c.id.startswith(OPS_PREFIX)),
             "external": {
                 "dataset": jailbreak.DATASET,
                 "revision": jailbreak.REVISION,

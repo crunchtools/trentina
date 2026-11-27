@@ -24,6 +24,8 @@ import hashlib
 import re
 from typing import TYPE_CHECKING, Any
 
+from corpora import benign_agent, benign_code, benign_mail
+
 if TYPE_CHECKING:
     import random
     from collections.abc import Callable
@@ -533,5 +535,14 @@ MAKERS: dict[str, Callable[[random.Random, str], Any]] = {
     "search_results": search_results,
     "fetched_page": fetched_page,
     "journal_lines": journal_lines,
+    # The shapes of a1813, from the generators that build their benign cases,
+    # so an attack arrives in exactly the furniture its benign twin does.
+    "marketing_email": benign_mail.ENVELOPES["marketing_email_envelope"],
+    "marketing_html": benign_mail.ENVELOPES["marketing_html_envelope"],
+    "ci_log": benign_code.ENVELOPES["ci_log_envelope"],
+    "review_comment": benign_code.ENVELOPES["review_comment_envelope"],
+    "code_file": benign_code.ENVELOPES["code_comment_envelope"],
+    "review_request": benign_agent.ENVELOPES["review_request"],
+    "agent_note": benign_agent.ENVELOPES["agent_note"],
 }
 """Every envelope, by the shape name a result is reported under."""

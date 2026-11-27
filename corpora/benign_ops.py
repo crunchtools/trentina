@@ -39,6 +39,8 @@ import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from corpora import benign_agent, benign_code, benign_mail
+
 if TYPE_CHECKING:
     from corpora.internal import Case
 
@@ -680,21 +682,57 @@ def _build() -> tuple[Benign, ...]:
         ("issue_list", 8, lambda i: m.issue_list((10, 30, 60, 100)[i % 4])),
         ("created_issue", 8, lambda i: m.created_issue()),
     ]
-    return tuple(
+    cases = [
         Benign(f"{category}-{i:02d}", category, make(i))
         for category, count, make in plan
         for i in range(count)
-    )
+    ]
+    # The shapes the gateway began carrying in November (a1813), each from its
+    # own source seeded by its name, so none of them moves the ones above.
+    for category, count in WORK_SHAPES:
+        r = random.Random(f"{SEED}:{category}")
+        make = _WORK_MAKERS[category]
+        cases += [Benign(f"{category}-{i:02d}", category, make(r, i)) for i in range(count)]
+    return tuple(cases)
+
+
+_WORK_MAKERS: dict[str, Any] = {
+    **benign_mail.SHAPES,
+    **benign_code.SHAPES,
+    **benign_agent.SHAPES,
+}
+
+WORK_SHAPES: tuple[tuple[str, int], ...] = (
+    ("retail_email", 32),
+    ("order_email", 24),
+    ("marketing_html", 24),
+    ("source_code", 16),
+    ("ci_log", 16),
+    ("pr_diff", 16),
+    ("review_comments", 24),
+    ("review_prompt", 12),
+    ("review_request", 24),
+    ("agent_note", 32),
+)
+"""What agents read and write since the fleet moved onto the gateway (a1813),
+by shape and case count: retail and order email read through a mail backend,
+as text and as the raw HTML of an HTML-only message (#957, ``benign_mail``);
+source files, CI job logs, pull-request diffs and review comments the
+developer seats read (``benign_code``); code-review
+prompts, the outbound review request a reviewer sends its model (#869, #848)
+and the memory notes agents store (``benign_agent``). Production refused each
+with L2 alone, at 0.62 to 0.9998, while L3 called it clean."""
 
 
 BENIGN: tuple[Benign, ...] = _build()
-"""The corpus: 296 cases across eighteen shapes."""
+"""The corpus: 524 cases across twenty-eight shapes."""
 
 KNOWN_GAPS: tuple[str, ...] = (
     "security_docs",
     "detector_source",
     "issue_list",
     "created_issue",
+    *(category for category, _ in WORK_SHAPES),
 )
 """Shapes the shipped model is known to flag, measured on every run and held
 outside the gate's budget: known gap 31 in ``docs/defense-pipeline.md``.
@@ -712,6 +750,11 @@ and gap 28 (``meeting_notes``: machine-written notes ending in bare links)
 left this list when the fine-tuned model shipped: none of their 54 cases
 flags under it, so they are gated. ``event_id_reply`` (known gap 18) left
 earlier (#431): read once, none of the twelve flags.
+
+The ``WORK_SHAPES`` (a1813) are gap 36: the shipped model flags retail
+email 36 times in 40, review comments 26 in 40, agent notes 11 in 40. They
+are the anchors and envelopes of the fine-tune that is meant to close it,
+and leave this list with the model that passes them.
 
 A shape leaves this list by passing, in the change that says so."""
 

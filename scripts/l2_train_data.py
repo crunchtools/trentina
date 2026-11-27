@@ -44,7 +44,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from corpora.benign_ops import BENIGN, in_tuning
+from corpora.benign_ops import BENIGN, KNOWN_GAPS, in_tuning
 from corpora.envelopes import MAKERS
 from corpora.gateway_read import as_read
 
@@ -64,8 +64,9 @@ PER_ENVELOPE = 120
 arrive alone, so an envelope holds 300 rows as it did before the twins."""
 REPLAY = 1000
 ANCHOR_REPEATS = 8
-"""Times each ``benign_ops`` tuning case appears in training: about 85 cases,
-so the anchor weighs about as much as one envelope's benign rows times five."""
+"""Times each ``benign_ops`` tuning case appears in training: about 125 cases
+since a1813's shapes joined, so the anchor weighs about as much as one
+envelope's benign rows times eight."""
 
 SOURCES: tuple[dict[str, Any], ...] = (
     {
@@ -316,12 +317,19 @@ async def build(
 
 
 async def anchors() -> list[dict[str, Any]]:
-    """``benign_ops``'s tuning split, ``ANCHOR_REPEATS`` times; never its held-out cases."""
+    """``benign_ops``'s tuning split, ``ANCHOR_REPEATS`` times; never its held-out cases.
+
+    A shape the shipped model reads well is distilled, to keep it read well. A
+    known gap is not: Horizon, the teacher, flags it (retail email at 0.99),
+    so distilling would train toward the very refusal the anchor is there to
+    remove. It trains on its label alone.
+    """
     rows = []
     for case in BENIGN:
         if in_tuning(case.id):
             text = await as_read(case.payload, case.category)
-            row = {"text": text, "label": 0, "shape": "ops", "distill": True}
+            distill = case.category not in KNOWN_GAPS
+            row = {"text": text, "label": 0, "shape": "ops", "distill": distill}
             rows += [row] * ANCHOR_REPEATS
     return rows
 
