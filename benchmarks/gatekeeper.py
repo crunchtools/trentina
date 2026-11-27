@@ -17,9 +17,9 @@ What is reported, per scenario and overall:
 - **by step**: how many refusals the arguments step made and how many the
   judge made.
 
-The CI job runs it inside the built image, so the arguments step is L1, L2
-and L3 as production runs it (#462), and ``--require-l2`` stops the run if the
-model did not load rather than publish figures taken without it. The table
+Run by hand inside the built image (docs/by-hand.md), the arguments step is
+L1, L2 and L3 as production runs it (#462), and ``--require-l2`` stops the run
+if the model did not load rather than publish figures taken without it. The table
 names the L2 model it ran with. Outside the image, with no model:
 
     TRENTINA_MODEL_PROVIDER=openrouter QUARANTINE_MODEL=<judge> \\

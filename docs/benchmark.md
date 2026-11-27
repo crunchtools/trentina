@@ -762,8 +762,8 @@ part that holds a piece, by majority of three votes. The split rows count
 only the attacks L3 catches whole, and six parts with no attack in them give
 the false-positive floor.
 
-It needs judge quota, so it runs as the `paging` job of the
-`Benchmark - decoy tools` workflow, once per shipped judge, on merged code.
+It needs judge quota, so it is run by hand on merged code, once per shipped
+judge ([by hand](by-hand.md#paging)).
 
 2026-10-11, at `ac230d8` (1.9.0), each judge through OpenRouter with its own
 prompt pack, three votes a part. No L2 model in the job, so every number is
@@ -1388,7 +1388,7 @@ fine-tune within noise. All three L2 gates pass (benign 0 of 143 held-out,
 envelopes 3 of 480, obfuscation no drop). Iteration stops here: more
 rounds would tune further to a screen that is no longer unseen.
 
-The shipped model trains in `l2-train` on the same card
+The shipped model trains [by hand](by-hand.md#training-the-l2-model) on the same card
 (`scripts/runpod_train.py`: one Secure Cloud RTX 4090, the same image and
 pins), since two epochs on the runner's CPU run past GitHub's six-hour
 limit. GPU runs are not bit-identical, so the check on that run is the
@@ -2176,8 +2176,8 @@ the provider answers before any of it is built on.
 
 Every number above is on text we or a paper wrote. `benchmarks/wild_feed.py`
 collects what is written for agents to read: Moltbook's public posts and
-comments, read through its API with no account. `collect-wild.yml` runs it
-daily and by hand. Each run takes up to 300 documents (the newest comments
+comments, read through its API with no account. It ran daily in
+`collect-wild.yml` until 2026-10-08. Each run takes up to 300 documents (the newest comments
 under the five hottest posts for at most half, then the newest posts,
 fetched whole) and asks every judge with a shipped pack for a verdict on
 each, three votes, as `detonation.py --mode judge --documents` does. With
@@ -2188,8 +2188,8 @@ Since 2026-10-08 the daily collection is
 [crunchtools/data-collector](https://github.com/crunchtools/data-collector):
 it runs on a host, keeps documents and verdicts in SQLite across days, and
 calls the shipped pipeline (`defend`, all three layers) once per judge model
-where this harness asks the judge alone. `collect-wild.yml` remains for a
-one-off sample by hand, with the decoy replay. The first runs made here are
+where this harness asks the judge alone. A one-off sample with the decoy
+replay is still run [by hand](by-hand.md#collect-wild). The first runs made here are
 imported there, marked as the benchmark's.
 
 Nobody has labelled these documents, so nothing here is a detection rate.

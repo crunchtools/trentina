@@ -18,8 +18,8 @@ lives in EVAL.yml's ``source``, never in the fixture.
 Exits 0 when every case passes; 1 on any miss, a flagged control, a spurious
 or ungraded finding on a known-bad case, or a line outside the file; and 2
 when it cannot run (no ``ANTHROPIC_API_KEY``, bad EVAL.yml). httpx only; no
-SDK dependency. Not collected by pytest: it spends money, so CI runs it as its
-own job, and only when the key is set.
+SDK dependency. Not collected by pytest: it spends money, so a person runs it
+by hand with the key set (docs/by-hand.md).
 
     uv run python tests/boundary_review_eval.py [--case NAME ...] [--json-out PATH]
 """

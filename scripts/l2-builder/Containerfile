@@ -8,7 +8,8 @@
 #   podman build -f scripts/l2-builder/Containerfile -t l2-builder .
 #
 # The shipped fine-tune as gated (export, manifest, NOTICE, training.json): the
-# same digest the root Containerfile pins, kept in step by Renovate.
+# same digest the root Containerfile pins; tests/test_l2_envelopes.py holds the
+# two pins together.
 FROM quay.io/crunchtools/trentina-l2-model@sha256:02c8a8ff165f1c133535f00523de68169c1c12c58632d415e2cd0e4c579ee4c6 AS l2-model
 
 # Builder variant: DNF and a shell, for the native libraries PyTorch needs.
