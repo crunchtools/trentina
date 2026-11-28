@@ -11,6 +11,7 @@ under that name.
 ## [Unreleased]
 
 ### Security
+- **The attack-sim demo image installs starlette and uvicorn from a hash-locked requirements file (a1985, #964).** `demo/attack-sim/Containerfile` took `pip install starlette uvicorn` unpinned; it now installs `demo/attack-sim/requirements.txt`, which pins them and every transitive dependency (anyio, click, h11, idna, typing_extensions) to sha256-locked wheels, with `--no-deps --require-hashes --only-binary=:all:`.
 - **uv is installed from a hash-locked requirements file, not a bare version pin (a1912, #961).** Every image stage that installs uv (the root `Containerfile`'s `lock`, `opencv` and `deps` stages, and `.oss-scanner/Containerfile`) now takes it from `container/build-requirements.txt`, sha256-locked for the Linux x86_64 and aarch64 wheels and installed with `--no-deps --require-hashes --only-binary=:all:`, as mcp-syslog#97 did.
 
 ### Added
