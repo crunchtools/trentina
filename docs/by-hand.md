@@ -455,8 +455,11 @@ done
 [[ $passed == 1 ]]
 ```
 
-Publishing a model that passed is not done here: `quay.io/crunchtools/
-trentina-l2-model` is signed with the fleet key, which no seat holds. Until it
-has a CI route (crunchtools/trentina#954), hand the gated export to Josui
-Prime. Shipping it is then a change to the model digest in `Containerfile` and
-`scripts/l2-builder/Containerfile` (a test holds the two together).
+Publishing a model that passed: tar the gated `blend-1` export with its files
+at the root of the archive (`tar -cf l2-export.tar -C build/l2-export/blend-1 .`)
+and take its `sha256sum`. An admin uploads the tarball as a release asset on
+`crunchtools/trentina`. A PR then sets the URL and checksum in
+`scripts/l2-model/Containerfile` and `scripts/l2-model/export.json` (with the
+sha256 of the round's `training.json`); tests hold the two together. The next
+trentina release builds and signs `quay.io/crunchtools/trentina-l2-model`; a
+second PR repins its digest in `Containerfile` and `scripts/l2-builder/Containerfile`.

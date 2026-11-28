@@ -106,3 +106,11 @@ file = "src/trentina/gateway/field_select.py"
 evidence = "for path in paths:\n    picked = _merge(picked, _pick(document, path))"
 status = "not-a-bug"
 reason = "Bounded and linear: at most 32 paths, each walking only the nodes on its own path (one visit per list element it crosses), so the cost is O(paths x matched nodes) over a result already capped at the backend response limit. Next to the transform and an L2 scan of the same result it is noise, and the unjudged path skips both. A trie would save microseconds for more code."
+
+[[findings]]
+agent = "bugs"
+category = "bug"
+file = "scripts/l2-model/Containerfile"
+evidence = "ADD --checksum=sha256:0000000000000000000000000000000000000000000000000000000000000000 \\\n    https://github.com/crunchtools/trentina/releases/download/A1813-PLACEHOLDER/l2-export.tar /export.tar"
+status = "not-a-bug"
+reason = "Deliberate placeholders in a draft (a1793): a1813's training round supplies the real asset URL and sha256. tests/test_l2_model_image.py::test_the_model_sha_is_not_the_placeholder fails while either is a placeholder, so the pull request cannot merge, and no release can try to build the image, until they are filled."

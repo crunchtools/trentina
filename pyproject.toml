@@ -478,3 +478,13 @@ name = "trentina-demo"
 containerfile = "demo/attack-sim/Containerfile"
 context = "demo/attack-sim"
 boot = "healthcheck"
+
+# The L2 model, a data-only scratch image (the gated ONNX export) published as
+# quay.io/crunchtools/trentina-l2-model by the same image and promote jobs.
+# Every release rebuilds it.
+[[tool.sdlc.images]]
+name = "trentina-l2-model"
+containerfile = "scripts/l2-model/Containerfile"
+context = "scripts/l2-model"
+boot = "none"
+boot-none-reason = "Data-only scratch image holding the ONNX export; there is nothing to run. Its gates are the training round's and tests/test_l2_integration.py, which loads it in the gateway image."
