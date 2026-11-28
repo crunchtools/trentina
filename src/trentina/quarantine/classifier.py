@@ -16,11 +16,13 @@ and extracted text (post-Layer 3) on the output verification path.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import collections
 import functools
 import json
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -550,12 +552,36 @@ def classify(
     )
 
 
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def _well_formed(text: str) -> str:
+    """``text`` with every lone surrogate replaced by U+FFFD, one for one.
+
+    A Python ``str`` can hold a surrogate code point on its own: JSON's
+    ``"\\ud83d"`` decodes to one, and so does text cut in the middle of an
+    escaped pair. A fast (Rust) tokenizer takes its input as UTF-8, which has
+    no encoding for one, and refuses the whole string with a ``TypeError``:
+    the scan fails and the content goes unjudged. The replacement is the same
+    length, so every offset the tokenizer reports is an offset into the
+    caller's text as well.
+    """
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return _LONE_SURROGATE.sub("\ufffd", text)
+    return text
+
+
 def _encode(text: str) -> list[int]:
     """Content token IDs, no special tokens, no truncation."""
     return list(
-        _tokenizer(text, truncation=False, add_special_tokens=False, return_attention_mask=False)[
-            "input_ids"
-        ]
+        _tokenizer(
+            _well_formed(text),
+            truncation=False,
+            add_special_tokens=False,
+            return_attention_mask=False,
+        )["input_ids"]
     )
 
 
@@ -579,10 +605,13 @@ def head(text: str, tokens: int) -> str:
     longest prefix whose ``estimate_tokens`` fits stands in.
     """
     if not is_classifier_available():
-        return text.encode("utf-8")[:tokens].decode("utf-8", errors="ignore")
+        # The incremental decoder holds back a sequence cut at the end, and
+        # surrogatepass keeps a lone surrogate, so the result is a prefix.
+        cut = text.encode("utf-8", "surrogatepass")[:tokens]
+        return codecs.getincrementaldecoder("utf-8")("surrogatepass").decode(cut)
     try:
         offsets = _tokenizer(
-            text,
+            _well_formed(text),
             truncation=False,
             add_special_tokens=False,
             return_attention_mask=False,
@@ -609,7 +638,7 @@ def token_starts(text: str) -> list[int] | None:
         return None
     try:
         offsets = _tokenizer(
-            text,
+            _well_formed(text),
             truncation=False,
             add_special_tokens=False,
             return_attention_mask=False,
@@ -628,7 +657,7 @@ def estimate_tokens(text: str) -> int:
     high on ASCII: an estimate may refuse what a count would admit, never
     the reverse.
     """
-    return len(text.encode("utf-8"))
+    return len(text.encode("utf-8", "surrogatepass"))
 
 
 async def classify_async(
