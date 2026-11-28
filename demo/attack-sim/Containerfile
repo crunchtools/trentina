@@ -4,11 +4,13 @@ USER 0
 
 WORKDIR /app
 
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir --no-deps --require-hashes --only-binary=:all: -r /tmp/requirements.txt
+
 COPY server.py build_archive.py ./
 COPY payload/ payload/
 
-RUN pip install --no-cache-dir starlette uvicorn && \
-    python build_archive.py && \
+RUN python build_archive.py && \
     chown -R 1001:0 /app
 
 USER 1001
