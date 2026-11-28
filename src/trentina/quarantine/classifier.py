@@ -16,6 +16,7 @@ and extracted text (post-Layer 3) on the output verification path.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import collections
 import functools
 import json
@@ -604,7 +605,10 @@ def head(text: str, tokens: int) -> str:
     longest prefix whose ``estimate_tokens`` fits stands in.
     """
     if not is_classifier_available():
-        return text.encode("utf-8")[:tokens].decode("utf-8", errors="ignore")
+        # The incremental decoder holds back a sequence cut at the end, and
+        # surrogatepass keeps a lone surrogate, so the result is a prefix.
+        cut = text.encode("utf-8", "surrogatepass")[:tokens]
+        return codecs.getincrementaldecoder("utf-8")("surrogatepass").decode(cut)
     try:
         offsets = _tokenizer(
             _well_formed(text),
@@ -653,7 +657,7 @@ def estimate_tokens(text: str) -> int:
     high on ASCII: an estimate may refuse what a count would admit, never
     the reverse.
     """
-    return len(text.encode("utf-8"))
+    return len(text.encode("utf-8", "surrogatepass"))
 
 
 async def classify_async(

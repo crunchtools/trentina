@@ -504,6 +504,13 @@ class TestLoneSurrogates:
         with utf8_only_tokenizer():
             assert token_starts(self.LONE) == [0, 4, 6]
 
+    def test_without_the_model_it_is_estimated_and_cut(self) -> None:
+        """The surrogate is three bytes; a cut inside it keeps what precedes it."""
+        assert estimate_tokens(self.LONE) == len(self.LONE) + 2
+        with patch(f"{_C}.is_classifier_available", return_value=False):
+            assert head(self.LONE, 6) == "cut "
+            assert head(self.LONE, 7) == "cut \ud83d"
+
     def test_well_formed_text_is_passed_through_untouched(self) -> None:
         from trentina.quarantine.classifier import _well_formed
 
