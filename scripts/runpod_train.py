@@ -230,13 +230,15 @@ def create() -> int:
     return 1
 
 
-def remote_script(epochs: float) -> str:
-    """The bash the pod runs: install the pins, then train ``epochs`` into MODEL_DIR."""
+def remote_script(epochs: float, blends: tuple[float, ...] = ()) -> str:
+    """The bash the pod runs: install the pins, then train ``epochs`` into MODEL_DIR,
+    with a ``blend-<a>`` beside it for each of ``blends`` (``train_l2_model.py``)."""
+    mixes = f" --blends {','.join(f'{a:g}' for a in blends)}" if blends else ""
     return f"""set -euo pipefail
 cd {REMOTE}
 nvidia-smi --query-gpu=name,driver_version --format=csv,noheader
 pip install -q -r scripts/l2-pod-requirements.txt
-python scripts/train_l2_model.py --data build/l2-train --out {MODEL_DIR} --epochs {epochs!r}
+python scripts/train_l2_model.py --data build/l2-train --out {MODEL_DIR} --epochs {epochs!r}{mixes}
 """
 
 
@@ -302,7 +304,7 @@ def fetch(ssh: list[str], archive: Path) -> None:
         subprocess.run([*ssh, f"tar cf - -C {REMOTE} {MODEL_DIR}"], stdout=out, check=True)
 
 
-def run(host: str, port: str, epochs: float) -> int:
+def run(host: str, port: str, epochs: float, blends: tuple[float, ...] = ()) -> int:
     """Ship the scripts and training set, train on the pod, bring MODEL_DIR back.
 
     Returns 1 if the local tar of the upload failed; a failed ssh step raises
@@ -311,7 +313,7 @@ def run(host: str, port: str, epochs: float) -> int:
     ssh = ssh_base(host, port)
     if not again_if_unreachable(lambda: upload(ssh, ["scripts", "build/l2-train"])):
         return 1
-    subprocess.run([*ssh, "bash -s"], input=remote_script(epochs).encode(), check=True)
+    subprocess.run([*ssh, "bash -s"], input=remote_script(epochs, blends).encode(), check=True)
     archive = runner_temp() / "l2-model.tar"
     again_if_unreachable(lambda: fetch(ssh, archive))
     unpack_model(archive, Path.cwd())
@@ -343,6 +345,17 @@ def epochs_above_zero(text: str) -> float:
     return value
 
 
+def blend_list(text: str) -> tuple[float, ...]:
+    """``--blends``: comma-separated mixes, each strictly between 0 and 1."""
+    try:
+        mixes = tuple(float(part) for part in text.split(",") if part.strip())
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"blends must be numbers, not {text}") from e
+    if not all(math.isfinite(a) and 0 < a < 1 for a in mixes):
+        raise argparse.ArgumentTypeError(f"each blend must be between 0 and 1, not {text}")
+    return mixes
+
+
 def cli() -> argparse.ArgumentParser:
     """The ``create``, ``run`` and ``terminate`` subcommands, each bound to its handler."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -352,7 +365,8 @@ def cli() -> argparse.ArgumentParser:
     train.add_argument("--host", required=True)
     train.add_argument("--port", type=int, required=True)
     train.add_argument("--epochs", type=epochs_above_zero, default=2.0)
-    train.set_defaults(handler=lambda a: run(a.host, str(a.port), a.epochs))
+    train.add_argument("--blends", type=blend_list, default=(), help="e.g. 0.6,0.8")
+    train.set_defaults(handler=lambda a: run(a.host, str(a.port), a.epochs, a.blends))
     stop = commands.add_parser("terminate")
     stop.add_argument("--pod", default="")
     stop.set_defaults(handler=lambda a: terminate(a.pod))

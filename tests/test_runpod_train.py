@@ -145,6 +145,17 @@ def test_remote_script_trains_the_recipe() -> None:
     assert f"cd {runpod_train.REMOTE}" in script
 
 
+def test_remote_script_passes_blends_through() -> None:
+    assert "--blends" not in runpod_train.remote_script(2.0)
+    assert "--blends 0.6,0.8" in runpod_train.remote_script(2.0, (0.6, 0.8))
+
+
+@pytest.mark.parametrize("text", ["0", "1", "1.5", "nan", "a,b"])
+def test_blends_lie_strictly_between_zero_and_one(text: str) -> None:
+    with pytest.raises(SystemExit):
+        runpod_train.cli().parse_args(["run", "--host", "h", "--port", "1", "--blends", text])
+
+
 def _archive(path: Path, names: dict[str, bytes], link: str | None = None) -> Path:
     with tarfile.open(path, "w") as tar:
         for name, content in names.items():

@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import hashlib
 import json
 import random
@@ -67,6 +68,22 @@ ANCHOR_REPEATS = 8
 """Times each ``benign_ops`` tuning case appears in training: about 125 cases
 since a1813's shapes joined, so the anchor weighs about as much as one
 envelope's benign rows times eight."""
+
+ENCODED = 400
+"""Attack texts that appear base64-encoded, and half as many benign ones (a1813).
+Round 1 of a1813 anchored on mail full of 200-character base64url tracking
+tokens, labelled benign, and the model stopped reading base64 at all: the
+obfuscation gate's base64 row fell from 41 to 4 of 44. The label of an
+encoded text is the label of what it decodes to, and these rows say so.
+They carry none of the gate's own framing (``Note: ``)."""
+
+ENCODED_FRAMES = (
+    "{}",
+    "Attachment (base64): {}",
+    "data:text/plain;base64,{}",
+    '{{"content": "{}", "encoding": "base64"}}',
+    "-----BEGIN MESSAGE-----\n{}\n-----END MESSAGE-----",
+)
 
 SOURCES: tuple[dict[str, Any], ...] = (
     {
@@ -316,21 +333,47 @@ async def build(
     return rows
 
 
-async def anchors() -> list[dict[str, Any]]:
+def encoded(rng: random.Random, benign: list[str], attack: list[str], n: int) -> list[dict]:
+    """``n`` attack texts and ``n // 2`` benign ones, base64-encoded in a frame.
+
+    Standard or URL-safe alphabet at random, so the alphabet a tracking token
+    uses carries no label either.
+    """
+    rows = []
+    for pool, label, count in ((attack, 1, n), (benign, 0, n // 2)):
+        for text in rng.sample(pool, min(count, len(pool))):
+            encode = rng.choice((base64.b64encode, base64.urlsafe_b64encode))
+            blob = encode(text.encode()).decode()
+            row = {"text": rng.choice(ENCODED_FRAMES).format(blob), "label": label}
+            rows.append(row | {"shape": "encoded", "distill": False} | ({"at": 0} if label else {}))
+    return rows
+
+
+async def anchors(attack: list[str], seed: int = SEED) -> list[dict[str, Any]]:
     """``benign_ops``'s tuning split, ``ANCHOR_REPEATS`` times; never its held-out cases.
 
     A shape the shipped model reads well is distilled, to keep it read well. A
     known gap is not: Horizon, the teacher, flags it (retail email at 0.99),
     so distilling would train toward the very refusal the anchor is there to
-    remove. It trains on its label alone.
+    remove. It trains on its label alone, and beside each repeat is an attack
+    twin, the same rendered case with a different attack planted in it:
+    without the twins (a1813 round 1) the anchors taught that the shape is
+    benign, and detection fell everywhere (garak 179 to 164 of 192).
     """
+    rng = random.Random(seed)
     rows = []
     for case in BENIGN:
-        if in_tuning(case.id):
-            text = await as_read(case.payload, case.category)
-            distill = case.category not in KNOWN_GAPS
-            row = {"text": text, "label": 0, "shape": "ops", "distill": distill}
-            rows += [row] * ANCHOR_REPEATS
+        if not in_tuning(case.id):
+            continue
+        text = await as_read(case.payload, case.category)
+        gap = case.category in KNOWN_GAPS
+        row = {"text": text, "label": 0, "shape": "ops", "distill": not gap}
+        rows += [row] * ANCHOR_REPEATS
+        if gap and attack:
+            for planted in rng.sample(attack, min(ANCHOR_REPEATS, len(attack))):
+                twin = plant(rng, text, planted)
+                at = attack_at(planted, twin)
+                rows.append({"text": twin, "label": 1, "shape": "ops", "at": at, "distill": False})
     return rows
 
 
@@ -365,11 +408,13 @@ def main() -> int:
         for name, held in (("train", False), ("val", True))
     }
     train = asyncio.run(build(*split["train"], args.per_envelope, args.replay))
-    train += asyncio.run(anchors())
+    train += asyncio.run(anchors(split["train"][1]))
+    train += encoded(random.Random(SEED + 1), *split["train"], ENCODED)
     random.Random(SEED).shuffle(train)
     val = asyncio.run(
         build(*split["val"], args.per_envelope // VAL_ONE_IN, args.replay // VAL_ONE_IN)
     )
+    val += encoded(random.Random(SEED + 2), *split["val"], ENCODED // VAL_ONE_IN)
     rows = train + val
     args.out.mkdir(parents=True, exist_ok=True)
     _write(args.out / "train.jsonl", train)

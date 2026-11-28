@@ -368,7 +368,7 @@ the pod's address on through `$GITHUB_ENV`, so both point at scratch:
 
 ```bash
 export RUNPOD_API_KEY=…
-PER_ENVELOPE=120 REPLAY=1000 EPOCHS=2
+PER_ENVELOPE=120 REPLAY=1000 EPOCHS=2 BLENDS=0.6,0.8   # BLENDS= for none
 export RUNNER_TEMP=$(mktemp -d) GITHUB_ENV=$(mktemp)
 GITHUB_SHA=$(git rev-parse HEAD)
 ```
@@ -398,7 +398,8 @@ set -a; . "$GITHUB_ENV"; set +a          # POD_ID, POD_HOST, POD_PORT
 
 [[ "$EPOCHS" =~ ^[0-9]*[.]?[0-9]+$ && ! "$EPOCHS" =~ ^[0.]+$ ]] \
   || { echo "epochs must be a number above zero" >&2; exit 1; }
-python3 scripts/runpod_train.py run --host "$POD_HOST" --port "$POD_PORT" --epochs "$EPOCHS" || run_failed=1
+python3 scripts/runpod_train.py run --host "$POD_HOST" --port "$POD_PORT" --epochs "$EPOCHS" \
+  ${BLENDS:+--blends "$BLENDS"} || run_failed=1
 
 python3 scripts/runpod_train.py terminate --pod "${POD_ID:-}"
 [ -z "${run_failed:-}" ]
