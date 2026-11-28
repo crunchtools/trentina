@@ -3,12 +3,13 @@
 # its agents with no network, so everything the test suite needs is installed
 # here. Nothing here is published: the shipped image is the root Containerfile.
 #
-# Same digest-pinned base and uv as the root Containerfile, so the scanner sees
-# the dependency set production runs. Docker ignores .containerignore, so
+# Same digest-pinned base and hash-locked uv as the root Containerfile, so the
+# scanner sees the dependency set production runs. Docker ignores .containerignore, so
 # tests/, docs/ and corpora/ all arrive with `COPY . /src`.
 FROM quay.io/hummingbird/python:3.14-builder@sha256:2cb296b79c1d802f1a3e8023892e854ecb6789a78dd306c4bbd27ebbbd3f76c8
 USER 0
-RUN pip install --no-cache-dir uv==0.13.7
+COPY container/build-requirements.txt /tmp/build-requirements.txt
+RUN pip install --no-cache-dir --no-deps --require-hashes --only-binary=:all: -r /tmp/build-requirements.txt
 
 COPY . /src
 WORKDIR /src

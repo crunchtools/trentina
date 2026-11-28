@@ -66,11 +66,14 @@ FROM quay.io/crunchtools/trentina-l2-model@sha256:02c8a8ff165f1c133535f00523de68
 # pyproject.toml and README.md and installed, every release bump and README
 # edit reinstalled all ~263 packages.
 #
-# uv is pinned so a cold runner installs with the same uv a warm one cached.
+# uv is pinned so a cold runner installs with the same uv a warm one cached,
+# and hash-locked in container/build-requirements.txt (#961): a version pin
+# alone is not a lockfile. Each stage that needs uv installs it from there.
 # ============================================================
 FROM quay.io/hummingbird/python:3.14-builder@sha256:df20744183ad6dcf65a5ff32409a2120892e3ce92c95bd736cb64ab66117f830 AS lock
 USER 0
-RUN pip install --no-cache-dir uv==0.13.7
+COPY container/build-requirements.txt /tmp/build-requirements.txt
+RUN pip install --no-cache-dir --no-deps --require-hashes --only-binary=:all: -r /tmp/build-requirements.txt
 WORKDIR /lock
 COPY pyproject.toml uv.lock ./
 
@@ -136,7 +139,8 @@ RUN uv export --frozen --no-dev --extra matrix --extra bridge --no-emit-project 
 FROM quay.io/hummingbird/python:3.14-builder@sha256:df20744183ad6dcf65a5ff32409a2120892e3ce92c95bd736cb64ab66117f830 AS opencv
 USER 0
 RUN dnf install -y gcc-c++ python3-devel cmake ninja-build tar gzip && dnf clean all
-RUN pip install --no-cache-dir uv==0.13.7
+COPY container/build-requirements.txt /tmp/build-requirements.txt
+RUN pip install --no-cache-dir --no-deps --require-hashes --only-binary=:all: -r /tmp/build-requirements.txt
 COPY --from=lock /numpy.txt /tmp/numpy.txt
 RUN uv pip install --no-cache --system --no-deps --require-hashes -r /tmp/numpy.txt
 ARG OPENCV_VERSION=5.1.0
@@ -175,7 +179,8 @@ USER 0
 # edit minted a new random id and missed the runtime's cache for this file.
 RUN tr -d - < /proc/sys/kernel/random/uuid > /etc/machine-id.seed
 
-RUN pip install --no-cache-dir uv==0.13.7
+COPY container/build-requirements.txt /tmp/build-requirements.txt
+RUN pip install --no-cache-dir --no-deps --require-hashes --only-binary=:all: -r /tmp/build-requirements.txt
 COPY --from=lock /requirements.txt /tmp/requirements.txt
 RUN uv pip install --no-cache --prefix=/usr --no-deps -r /tmp/requirements.txt
 COPY --from=opencv /usr/lib64/python3.14/site-packages/cv2/ /usr/lib64/python3.14/site-packages/cv2/
