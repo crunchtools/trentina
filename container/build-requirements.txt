@@ -1,0 +1,10 @@
+# Build tools the Containerfiles install, hash-locked (constitution S1/S2, #961).
+# Installed with --require-hashes by every stage that needs uv: the root
+# Containerfile's lock, opencv and deps stages, and .oss-scanner/Containerfile.
+# Linux x86_64 and aarch64 wheels only: no sdist, so a platform without a wheel
+# fails the build rather than compiling uv from source.
+uv==0.13.7 \
+    --hash=sha256:2c9bdc4a872b60a93c5f26c0791089ea11585a4f9d3b3c017d78eb8487505e25 \
+    --hash=sha256:8b8ac028ae4ebb2a3f9d04907c61794f2cf8d7a7002bfbb4019a3dee28351fb2 \
+    --hash=sha256:a90f5d95716ab83091f0f73a8e7ec64e557abf2a28537fcd719b2ac88e6f725a \
+    --hash=sha256:08f16fd463926786b702b497473511deae4b3e17a2fa6d22180950d6059a120d

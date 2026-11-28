@@ -10,6 +10,9 @@ under that name.
 
 ## [Unreleased]
 
+### Security
+- **uv is installed from a hash-locked requirements file, not a bare version pin (a1912, #961).** Every image stage that installs uv (the root `Containerfile`'s `lock`, `opencv` and `deps` stages, and `.oss-scanner/Containerfile`) now takes it from `container/build-requirements.txt`, sha256-locked for the Linux x86_64 and aarch64 wheels and installed with `--no-deps --require-hashes --only-binary=:all:`, as mcp-syslog#97 did.
+
 ### Added
 - **An operator can clear a session's marks and a profile's cool-down without restarting the gateway (a1724, #900).** Under 6.32.0 a false positive on the operator's own session held its memory writes until the window passed or the gateway restarted, since marks live in memory only. `session_marks_clear_tool` takes `profile` (its window and the marks of its sessions), `session` (a fingerprint or the 8+ hex characters the log prints: its marks, and the window if it owns it) or `all`, which is refused with the others; a call naming none changes nothing. Operator only, like `tool_pins`, and over federation only where the operator profile's internal backend allows it. Every clear logs a WARNING naming the caller and the windows and labels removed. A refusing mark afterwards opens a new window as usual.
 
